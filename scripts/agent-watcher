@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+STUCK_TIMEOUT="${CTF_STUCK_TIMEOUT:-10}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
+
+if [[ ! -f "$DB" ]]; then
+  echo "tasks.db not found" >&2
+  exit 1
+fi
+
+recovered=0
+paused=0
+
+# Find stuck agents
+stuck="$(sqlite3 "$DB" "
+  SELECT id, task_id, tmux_pane, pid, retry_count
+  FROM agents
+  WHERE status='running'
+    AND heartbeat_at < datetime('now', '-$STUCK_TIMEOUT minutes');
+" 2>/dev/null)"
+
+while IFS='|' read -r agent_id task_id pane pid retry_count; do
+  [[ -z "$agent_id" ]] && continue
+
+  echo "stuck agent #$agent_id (task #$task_id, no heartbeat for ${STUCK_TIMEOUT}+ min)"
+
+  # Kill tmux pane
+  if [[ -n "$pane" ]]; then
+    tmux kill-window -t "$TMUX_SESSION:$pane" 2>/dev/null || true
+  fi
+
+  # Kill process
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  if [[ "$retry_count" -lt 1 ]]; then
+    sqlite3 "$DB" "
+      UPDATE agents SET status='failed', completed_at=CURRENT_TIMESTAMP,
+             result='stuck: no heartbeat for ${STUCK_TIMEOUT}+ min' WHERE id=$agent_id;
+      UPDATE tasks SET status='todo', updated_at=CURRENT_TIMESTAMP WHERE id=$task_id;
+      INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-progress', 'todo');
+    "
+    echo "  reset task #$task_id to todo, will retry on next cycle"
+    recovered=$((recovered + 1))
+  else
+    sqlite3 "$DB" "
+      UPDATE agents SET status='failed', completed_at=CURRENT_TIMESTAMP,
+             result='stuck twice, paused' WHERE id=$agent_id;
+      UPDATE tasks SET status='paused', updated_at=CURRENT_TIMESTAMP,
+             notes=COALESCE(notes,'') || char(10) || '[agent] Stuck twice. Needs human attention.' WHERE id=$task_id;
+      INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-progress', 'paused');
+    "
+    echo "  task #$task_id paused (stuck twice)"
+    paused=$((paused + 1))
+  fi
+done <<< "$stuck"
+
+# Clean up orphaned tmux windows
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | while read -r win; do
+    if [[ "$win" == agent-* ]]; then
+      t_id="${win#agent-}"
+      running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE task_id=$t_id AND status='running';" 2>/dev/null)"
+      if [[ "$running" -eq 0 ]]; then
+        echo "orphan tmux window: $win (no running agent), killing"
+        tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true
+      fi
+    fi
+  done
+fi
+
+running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='running';" 2>/dev/null)"
+echo "watcher: $running running, $recovered recovered, $paused paused"
