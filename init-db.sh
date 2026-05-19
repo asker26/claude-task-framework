@@ -58,6 +58,7 @@ CREATE TABLE tasks (
     parent_task_id INTEGER,
     notes TEXT,
     due_date TEXT,
+    depends_on TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -123,13 +124,19 @@ CREATE TABLE memory (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Agents: track autonomous agent runs against tasks (future multi-agent support)
+-- Agents: track autonomous agent runs against tasks
 CREATE TABLE agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    task_id INTEGER REFERENCES tasks(id),
-    agent_type TEXT NOT NULL DEFAULT 'claude-code',
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    worker_name TEXT NOT NULL DEFAULT 'agent',
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    cli_session_id TEXT,
+    tmux_pane TEXT,
+    pid INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
     result TEXT,
+    heartbeat_at TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
