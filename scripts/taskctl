@@ -292,7 +292,7 @@ case "$cmd" in
       exit 1
     fi
     shift
-    proj_name="" task_type="feature" task_priority="medium" parent_id="" due_date="" notes=""
+    proj_name="" task_type="feature" task_priority="medium" parent_id="" due_date="" notes="" depends_on=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --project) proj_name="${2:-}"; shift 2 ;;
@@ -301,6 +301,7 @@ case "$cmd" in
         --parent) parent_id="${2:-}"; shift 2 ;;
         --due) due_date="${2:-}"; shift 2 ;;
         --notes) notes="${2:-}"; shift 2 ;;
+        --depends-on) depends_on="${2:-}"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
       esac
     done
@@ -313,8 +314,8 @@ case "$cmd" in
       fi
     fi
     new_id=$(sql_insert "
-      INSERT INTO tasks (title, type, priority, project_id, parent_task_id, due_date, notes)
-      VALUES ('$(sql_escape "$task_title")', '$(sql_escape "$task_type")', '$(sql_escape "$task_priority")', $(if [[ -n "$proj_id" ]]; then echo "$proj_id"; else echo "NULL"; fi), $(if [[ -n "$parent_id" ]]; then echo "$parent_id"; else echo "NULL"; fi), $(if [[ -n "$due_date" ]]; then echo "'$(sql_escape "$due_date")'"; else echo "NULL"; fi), $(if [[ -n "$notes" ]]; then echo "'$(sql_escape "$notes")'"; else echo "NULL"; fi));
+      INSERT INTO tasks (title, type, priority, project_id, parent_task_id, due_date, notes, depends_on)
+      VALUES ('$(sql_escape "$task_title")', '$(sql_escape "$task_type")', '$(sql_escape "$task_priority")', $(if [[ -n "$proj_id" ]]; then echo "$proj_id"; else echo "NULL"; fi), $(if [[ -n "$parent_id" ]]; then echo "$parent_id"; else echo "NULL"; fi), $(if [[ -n "$due_date" ]]; then echo "'$(sql_escape "$due_date")'"; else echo "NULL"; fi), $(if [[ -n "$notes" ]]; then echo "'$(sql_escape "$notes")'"; else echo "NULL"; fi), $(if [[ -n "$depends_on" ]]; then echo "'$(sql_escape "$depends_on")'"; else echo "NULL"; fi));
     ")
     echo "created task: $task_title (id $new_id)"
     ;;
@@ -462,7 +463,7 @@ commands:
   tasks-open <project>               Non-done tasks for a project
   add-org <name> [opts]              Create organization
   add-project <name> [opts]          Create project
-  add-task <title> [opts]            Create task
+  add-task <title> [opts]            Create task (--depends-on "[1,2]")
   add-member <name> [opts]           Create team member
   set-status <id> <status>           Update task status
   log <id> <status> [--notes ...]    Status change with audit log
