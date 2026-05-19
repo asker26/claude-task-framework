@@ -53,6 +53,10 @@ INSERT INTO tasks (title, type, status, priority, project_id, parent_task_id)
 INSERT INTO tasks (title, type, status, priority, project_id, parent_task_id)
   VALUES ('Implement Elasticsearch integration', 'feature', 'todo', 'high', (SELECT id FROM projects WHERE name = 'acme-api'), (SELECT id FROM tasks WHERE title = 'Add user search endpoint'));
 
+-- Dependencies: "Write API rate limiting docs" depends on "Add user search endpoint"
+UPDATE tasks SET depends_on = '[' || (SELECT id FROM tasks WHERE title = 'Add user search endpoint') || ']'
+  WHERE title = 'Write API rate limiting docs';
+
 -- Team members
 INSERT OR IGNORE INTO team_members (name, organization_id, github_username, discord_id)
   VALUES ('Alice', (SELECT id FROM organizations WHERE name = 'Acme Corp'), 'alice-dev', '123456789');

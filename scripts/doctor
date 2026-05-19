@@ -28,6 +28,7 @@ check "jq installed" "command -v jq"
 check "git installed" "command -v git"
 check "python3 installed" "command -v python3"
 check "gh CLI installed" "command -v gh" optional
+check "tmux installed" "command -v tmux" optional
 check "tasks.db exists" "test -f '$DB'"
 
 if [[ -f "$DB" ]]; then
@@ -35,7 +36,7 @@ if [[ -f "$DB" ]]; then
     check "table: $table" "sqlite3 '$DB' \"SELECT 1 FROM $table LIMIT 0;\""
   done
   # agents table is optional (only in v2+ schemas)
-  check "table: agents" "sqlite3 '$DB' \"SELECT 1 FROM agents LIMIT 0;\"" optional
+  check "table: agents" "sqlite3 '$DB' \"SELECT 1 FROM agents LIMIT 0;\""
 fi
 
 for script in taskctl current-focus project-context discord-notify jira-task; do
