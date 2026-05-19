@@ -62,6 +62,13 @@ if [[ "$task_status" != "todo" ]]; then
   exit 1
 fi
 
+# Guard: prevent duplicate running agents for the same task
+already_running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE task_id=$task_id AND status='running';" 2>/dev/null)"
+if [[ "$already_running" -gt 0 ]]; then
+  echo "task $task_id already has a running agent"
+  exit 0
+fi
+
 # Check dependencies
 deps="$(sqlite3 "$DB" "SELECT depends_on FROM tasks WHERE id=$task_id;" 2>/dev/null)"
 if [[ -n "$deps" && "$deps" != "null" ]]; then
@@ -98,7 +105,12 @@ prev_retry="$(sqlite3 "$DB" "
   WHERE task_id=$task_id AND status='failed'
   ORDER BY created_at DESC LIMIT 1;
 " 2>/dev/null)"
-retry_count="${prev_retry:-0}"
+# Increment retry_count from previous attempt (0 if first attempt)
+if [[ -n "$prev_retry" ]]; then
+  retry_count=$(( prev_retry + 1 ))
+else
+  retry_count=0
+fi
 
 # Insert agent record
 agent_id="$(sqlite3 "$DB" "

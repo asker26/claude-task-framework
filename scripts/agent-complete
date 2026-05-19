@@ -101,8 +101,8 @@ else
       UPDATE tasks SET status='todo', updated_at=CURRENT_TIMESTAMP WHERE id=$task_id;
       INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-progress', 'todo');
     "
-    echo "task #$task_id failed (attempt $((retry_count + 1))), re-dispatching..."
-    "$ROOT/scripts/agent-dispatch" "$task_id" 2>/dev/null || true
+    echo "task #$task_id failed (attempt $((retry_count + 1))), will retry on next daemon cycle"
+    # Don't re-dispatch directly — let the daemon handle it to avoid race conditions
   else
     sqlite3 "$DB" "
       UPDATE agents SET status='failed', completed_at=CURRENT_TIMESTAMP,
