@@ -26,6 +26,33 @@ sql_escape() {
   printf "%s" "$1" | sed "s/'/''/g"
 }
 
+sql_write() {
+  sqlite3 "$DB" "$1"
+}
+
+sql_insert() {
+  sqlite3 "$DB" "$1
+  SELECT last_insert_rowid();"
+}
+
+sql_raw() {
+  sqlite3 -readonly "$DB" "$1"
+}
+
+resolve_org_id() {
+  local org_name="$1"
+  local org_escaped
+  org_escaped="$(sql_escape "$org_name")"
+  sql_scalar "SELECT id FROM organizations WHERE name = '${org_escaped}' LIMIT 1;"
+}
+
+resolve_project_id() {
+  local proj_name="$1"
+  local proj_escaped
+  proj_escaped="$(sql_escape "$proj_name")"
+  sql_scalar "SELECT id FROM projects WHERE name = '${proj_escaped}' LIMIT 1;"
+}
+
 task_query() {
   local project_name="$1"
   local open_only="${2:-0}"
@@ -205,21 +232,240 @@ case "$cmd" in
     "
     echo "updated task $id -> $status"
     ;;
+  add-org)
+    org_name="${1:-}"
+    if [[ -z "$org_name" ]]; then
+      echo "usage: taskctl add-org <name> [--jira-instance <url>] [--jira-key <key>] [--discord-webhook <url>]" >&2
+      exit 1
+    fi
+    shift
+    jira_instance="" jira_key="" discord_webhook=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --jira-instance) jira_instance="${2:-}"; shift 2 ;;
+        --jira-key) jira_key="${2:-}"; shift 2 ;;
+        --discord-webhook) discord_webhook="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    new_id=$(sql_insert "
+      INSERT INTO organizations (name, jira_instance, jira_project_key, discord_webhook_url)
+      VALUES ('$(sql_escape "$org_name")', '$(sql_escape "$jira_instance")', '$(sql_escape "$jira_key")', '$(sql_escape "$discord_webhook")');
+    ")
+    echo "created org: $org_name (id $new_id)"
+    ;;
+  add-project)
+    proj_name="${1:-}"
+    if [[ -z "$proj_name" ]]; then
+      echo "usage: taskctl add-project <name> [--path <local_path>] [--repo <github_url>] [--org <org_name>] [--description <text>]" >&2
+      exit 1
+    fi
+    shift
+    local_path="" github_repo="" org_name="" description=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --path) local_path="${2:-}"; shift 2 ;;
+        --repo) github_repo="${2:-}"; shift 2 ;;
+        --org) org_name="${2:-}"; shift 2 ;;
+        --description) description="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    org_id=""
+    if [[ -n "$org_name" ]]; then
+      org_id="$(resolve_org_id "$org_name")"
+      if [[ -z "$org_id" ]]; then
+        echo "org not found: $org_name" >&2
+        exit 1
+      fi
+    fi
+    new_id=$(sql_insert "
+      INSERT INTO projects (name, local_path, github_repo, description, organization_id)
+      VALUES ('$(sql_escape "$proj_name")', '$(sql_escape "$local_path")', '$(sql_escape "$github_repo")', '$(sql_escape "$description")', $(if [[ -n "$org_id" ]]; then echo "$org_id"; else echo "NULL"; fi));
+    ")
+    echo "created project: $proj_name (id $new_id)"
+    ;;
+  add-task)
+    task_title="${1:-}"
+    if [[ -z "$task_title" ]]; then
+      echo "usage: taskctl add-task <title> [--project <name>] [--type <type>] [--priority <pri>] [--parent <id>] [--due <date>] [--notes <text>]" >&2
+      exit 1
+    fi
+    shift
+    proj_name="" task_type="feature" task_priority="medium" parent_id="" due_date="" notes=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --project) proj_name="${2:-}"; shift 2 ;;
+        --type) task_type="${2:-}"; shift 2 ;;
+        --priority) task_priority="${2:-}"; shift 2 ;;
+        --parent) parent_id="${2:-}"; shift 2 ;;
+        --due) due_date="${2:-}"; shift 2 ;;
+        --notes) notes="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    proj_id=""
+    if [[ -n "$proj_name" ]]; then
+      proj_id="$(resolve_project_id "$proj_name")"
+      if [[ -z "$proj_id" ]]; then
+        echo "project not found: $proj_name" >&2
+        exit 1
+      fi
+    fi
+    new_id=$(sql_insert "
+      INSERT INTO tasks (title, type, priority, project_id, parent_task_id, due_date, notes)
+      VALUES ('$(sql_escape "$task_title")', '$(sql_escape "$task_type")', '$(sql_escape "$task_priority")', $(if [[ -n "$proj_id" ]]; then echo "$proj_id"; else echo "NULL"; fi), $(if [[ -n "$parent_id" ]]; then echo "$parent_id"; else echo "NULL"; fi), $(if [[ -n "$due_date" ]]; then echo "'$(sql_escape "$due_date")'"; else echo "NULL"; fi), $(if [[ -n "$notes" ]]; then echo "'$(sql_escape "$notes")'"; else echo "NULL"; fi));
+    ")
+    echo "created task: $task_title (id $new_id)"
+    ;;
+  add-member)
+    member_name="${1:-}"
+    if [[ -z "$member_name" ]]; then
+      echo "usage: taskctl add-member <name> --org <org_name> [--github <user>] [--discord <id>] [--jira <id>]" >&2
+      exit 1
+    fi
+    shift
+    org_name="" github="" discord="" jira=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --org) org_name="${2:-}"; shift 2 ;;
+        --github) github="${2:-}"; shift 2 ;;
+        --discord) discord="${2:-}"; shift 2 ;;
+        --jira) jira="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    if [[ -z "$org_name" ]]; then
+      echo "--org is required" >&2
+      exit 1
+    fi
+    org_id="$(resolve_org_id "$org_name")"
+    if [[ -z "$org_id" ]]; then
+      echo "org not found: $org_name" >&2
+      exit 1
+    fi
+    new_id=$(sql_insert "
+      INSERT INTO team_members (name, organization_id, github_username, discord_id, jira_user_id)
+      VALUES ('$(sql_escape "$member_name")', $org_id, '$(sql_escape "$github")', '$(sql_escape "$discord")', '$(sql_escape "$jira")');
+    ")
+    echo "created member: $member_name (id $new_id)"
+    ;;
+  log)
+    id="${1:-}"
+    new_status="${2:-}"
+    if [[ -z "$id" || -z "$new_status" ]]; then
+      echo "usage: taskctl log <task_id> <status> [--notes <text>]" >&2
+      exit 1
+    fi
+    if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+      echo "task id must be numeric" >&2
+      exit 1
+    fi
+    shift 2
+    notes=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --notes) notes="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    old_status="$(sql_scalar "SELECT status FROM tasks WHERE id = $id;")"
+    if [[ -z "$old_status" ]]; then
+      echo "task $id not found" >&2
+      exit 1
+    fi
+    new_escaped="$(sql_escape "$new_status")"
+    sql_write "
+      UPDATE tasks SET status = '${new_escaped}', updated_at = CURRENT_TIMESTAMP WHERE id = ${id};
+      INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES (${id}, '$(sql_escape "$old_status")', '${new_escaped}');
+    "
+    if [[ -n "$notes" ]]; then
+      sql_write "UPDATE tasks SET notes = '$(sql_escape "$notes")' WHERE id = ${id};"
+    fi
+    echo "$old_status -> $new_status (task #$id)"
+    ;;
+  dashboard)
+    cwd_input="${1:-$PWD}"
+    echo "FOCUS DASHBOARD"
+    echo "==============="
+    # Try to detect project from cwd
+    cwd_escaped="$(sql_escape "$cwd_input")"
+    proj_row="$(sql_scalar "
+      SELECT p.name || '|' || COALESCE(o.name, '-')
+      FROM projects p
+      LEFT JOIN organizations o ON o.id = p.organization_id
+      WHERE '${cwd_escaped}' LIKE p.local_path || '%'
+      ORDER BY length(p.local_path) DESC
+      LIMIT 1;
+    " 2>/dev/null || echo "")"
+    if [[ -n "$proj_row" ]]; then
+      IFS='|' read -r d_proj d_org <<< "$proj_row"
+      echo "Org: $d_org | Project: $d_proj (from cwd)"
+    fi
+    echo ""
+    echo "Active:"
+    active_out="$(sql_raw "
+      SELECT printf('  #%-4d [%-4s] %-35s %-12s %s', t.id,
+             UPPER(SUBSTR(t.priority,1,3)), t.title, t.status, COALESCE(p.name,'-'))
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.status IN ('in-progress','testing')
+      ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               t.updated_at DESC
+      LIMIT 10;
+    " 2>/dev/null)" || true
+    if [[ -n "$active_out" ]]; then echo "$active_out"; else echo "  (none)"; fi
+    echo ""
+    echo "Next up:"
+    next_out="$(sql_raw "
+      SELECT printf('  #%-4d [%-4s] %-35s %-12s %s', t.id,
+             UPPER(SUBSTR(t.priority,1,3)), t.title, t.status, COALESCE(p.name,'-'))
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.status = 'todo'
+      ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               t.updated_at DESC
+      LIMIT 5;
+    " 2>/dev/null)" || true
+    if [[ -n "$next_out" ]]; then echo "$next_out"; else echo "  (none)"; fi
+    echo ""
+    echo "Recent changes:"
+    changes_out="$(sql_raw "
+      SELECT printf('  #%-4d %-12s <- %-12s %s', sc.task_id, sc.to_status, COALESCE(sc.from_status,'new'),
+             CASE
+               WHEN (strftime('%s','now') - strftime('%s',sc.changed_at)) < 3600
+                 THEN (strftime('%s','now') - strftime('%s',sc.changed_at))/60 || 'm ago'
+               WHEN (strftime('%s','now') - strftime('%s',sc.changed_at)) < 86400
+                 THEN (strftime('%s','now') - strftime('%s',sc.changed_at))/3600 || 'h ago'
+               ELSE (strftime('%s','now') - strftime('%s',sc.changed_at))/86400 || 'd ago'
+             END)
+      FROM task_status_changes sc
+      ORDER BY sc.changed_at DESC
+      LIMIT 5;
+    " 2>/dev/null)" || true
+    if [[ -n "$changes_out" ]]; then echo "$changes_out"; else echo "  (none)"; fi
+    ;;
   *)
     cat <<'USAGE'
 usage: taskctl <command>
 
 commands:
-  projects
-  active
-  active-high-json
-  focus
-  project <project-name>
-  project-from-cwd [cwd]
-  team-member <github-username>
-  tasks <project-name> [--open]
-  tasks-open <project-name>
-  set-status <id> <status>
+  projects                           List all projects
+  active                             Show in-progress/testing tasks
+  active-high-json                   High-priority active tasks as JSON
+  focus                              Top priority tasks
+  dashboard [cwd]                    Full focus dashboard
+  project <name>                     Project details as JSON
+  project-from-cwd [cwd]            Detect project from directory
+  team-member <github-username>      Team member details as JSON
+  tasks <project> [--open]           Tasks for a project
+  tasks-open <project>               Non-done tasks for a project
+  add-org <name> [opts]              Create organization
+  add-project <name> [opts]          Create project
+  add-task <title> [opts]            Create task
+  add-member <name> [opts]           Create team member
+  set-status <id> <status>           Update task status
+  log <id> <status> [--notes ...]    Status change with audit log
 USAGE
     exit 1
     ;;

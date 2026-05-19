@@ -17,65 +17,48 @@ A task management and autonomous execution framework for [Claude Code](https://d
 git clone https://github.com/asker26/claude-task-framework.git
 cd claude-task-framework
 
-# Initialize the database
-chmod +x init-db.sh
-./init-db.sh
+# Run the setup wizard (creates DB, first project, installs hooks + skills)
+chmod +x setup.sh scripts/* hooks/* *.sh
+./setup.sh
+```
 
-# Make scripts executable
-chmod +x scripts/* hooks/* backup-db.sh
+Or set up manually:
 
-# Add your first project
-sqlite3 tasks.db "INSERT INTO projects (name, local_path, description) VALUES ('my-app', '$HOME/projects/my-app', 'My app');"
+```bash
+./init-db.sh                                          # Create empty database
+./scripts/taskctl add-org "My Team"                   # Add an organization
+./scripts/taskctl add-project "my-app" --org "My Team" --path ~/projects/my-app
+./scripts/taskctl add-task "First feature" --project "my-app" --priority high
+./scripts/taskctl dashboard                           # See your dashboard
+./scripts/doctor                                      # Verify setup
+```
 
-# Copy the example CLAUDE.md to your home directory and customize it
+Optional: load sample data to explore the framework:
+```bash
+./seed-sample.sh
+./scripts/taskctl dashboard
+```
+
+Copy the example CLAUDE.md to your home directory and customize it:
+```bash
 cp CLAUDE.md.example ~/CLAUDE.md
 ```
 
 ## Setting Up Hooks
 
-Add to your project's `.claude/settings.json`:
+The setup wizard installs hooks automatically. To install manually, copy the template and replace the placeholder path:
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-task-framework/hooks/session-start.sh"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-task-framework/hooks/intent-classifier.sh"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/claude-task-framework/hooks/stop-guard.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+# Copy and customize the hook template
+cat hooks.json.example | sed "s|__FRAMEWORK_PATH__|$(pwd)|g" > /tmp/hooks.json
+
+# If you already have ~/.claude/settings.json, merge the hooks key:
+jq --argjson hooks "$(jq '.hooks' /tmp/hooks.json)" '. + {hooks: $hooks}' \
+  ~/.claude/settings.json > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json
+
+# Or if starting fresh:
+cat hooks.json.example | sed "s|__FRAMEWORK_PATH__|$(pwd)|g" > ~/.claude/settings.json
 ```
-
-Replace `/path/to/claude-task-framework` with the actual path where you cloned the repo.
 
 ## Setting Up Skills
 
@@ -92,7 +75,10 @@ This gives you `/feature`, `/bugfix`, `/refactor`, `/opib`, `/list-prs`, and `/s
 ```
 claude-task-framework/
 ├── init-db.sh                 # Creates empty tasks.db with full schema
+├── setup.sh                   # Interactive setup wizard
+├── seed-sample.sh             # Optional sample data for exploration
 ├── backup-db.sh               # Daily SQL dump + git commit
+├── hooks.json.example         # Hook config template for ~/.claude/settings.json
 ├── CLAUDE.md.example          # Template for your ~/CLAUDE.md
 ├── AGENTS.md                  # Instructions for AI agents working in this repo
 ├── hooks/
@@ -100,7 +86,9 @@ claude-task-framework/
 │   ├── intent-classifier.sh   # Detects intent, chains autonomous execution
 │   └── stop-guard.sh          # Prevents premature exit mid-chain
 ├── scripts/
-│   ├── taskctl                # CLI for querying tasks.db
+│   ├── taskctl                # CLI for querying + managing tasks.db
+│   ├── doctor                 # Health check (deps, DB, hooks, permissions)
+│   ├── agent-dispatch         # Multi-agent entry point (stub)
 │   ├── current-focus          # Shows current priority + active tasks
 │   ├── project-context        # Resolves project from cwd
 │   ├── discord-notify         # Sends Discord webhook notifications
@@ -150,6 +138,7 @@ The `tasks.db` database has these tables:
 | `task_status_changes` | Audit log of status transitions |
 | `project_memories` | Persistent context per project (architecture notes, gotchas) |
 | `memory` | General-purpose memory store |
+| `agents` | Track autonomous agent runs per task (future multi-agent) |
 
 See `docs/plans/task-management-design.md` for the full schema reference.
 
@@ -163,10 +152,28 @@ The main CLI for interacting with `tasks.db`:
 scripts/taskctl projects              # List all projects
 scripts/taskctl active                # Show in-progress/testing tasks
 scripts/taskctl focus                 # Top priority tasks
+scripts/taskctl dashboard             # Full focus dashboard
 scripts/taskctl tasks "my-app"        # Tasks for a project
 scripts/taskctl tasks "my-app" --open # Only non-done tasks
 scripts/taskctl set-status 42 done    # Update task status
 scripts/taskctl project-from-cwd      # Detect project from current directory
+```
+
+### CRUD
+
+```bash
+scripts/taskctl add-org "My Team" --discord-webhook "https://..."
+scripts/taskctl add-project "my-app" --org "My Team" --path ~/projects/my-app
+scripts/taskctl add-task "Build login" --project "my-app" --type feature --priority high
+scripts/taskctl add-member "Alice" --org "My Team" --github alice-dev
+scripts/taskctl log 1 in-progress --notes "Started working on it"
+scripts/taskctl dashboard
+```
+
+### doctor
+
+```bash
+scripts/doctor    # Verify DB, deps, hooks, and script permissions
 ```
 
 ### discord-notify

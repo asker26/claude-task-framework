@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "agent-dispatch: not yet implemented"
+echo "This will be the entry point for multi-agent task execution."
+echo ""
+echo "Usage: agent-dispatch <task-id> [--agent-type <type>]"
+echo ""
+echo "Planned agent types: claude-code, codex, custom"
+echo "See docs/plans/ for the multi-agent design when available."
+exit 1

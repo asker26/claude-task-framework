@@ -95,12 +95,19 @@ For each project, you can add:
 
 ## Step 6: Task Management
 
-This is the core of this framework:
+**Fastest path:** Run the setup wizard — it handles everything below:
+```bash
+./setup.sh
+```
+
+**Manual setup:**
 
 1. Clone this repo
 2. Run `./init-db.sh` to create an empty `tasks.db` with the full schema
-3. Claude queries this database for scope checks, priority management, and task tracking
-4. See `docs/plans/task-management-design.md` for the full design
+3. Use `./scripts/taskctl add-org`, `add-project`, `add-task` to populate your data
+4. Run `./scripts/doctor` to verify everything is configured correctly
+5. Claude queries this database for scope checks, priority management, and task tracking
+6. See `docs/plans/task-management-design.md` for the full design
 
 ## Configuration File Summary
 

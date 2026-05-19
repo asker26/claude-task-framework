@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+PASS="\033[32m[ok]\033[0m"
+FAIL="\033[31m[FAIL]\033[0m"
+WARN="\033[33m[warn]\033[0m"
+errors=0
+
+check() {
+  if eval "$2" >/dev/null 2>&1; then
+    printf "$PASS %s\n" "$1"
+  elif [[ "${3:-}" == "optional" ]]; then
+    printf "$WARN %s (optional)\n" "$1"
+  else
+    printf "$FAIL %s\n" "$1"
+    errors=$((errors + 1))
+  fi
+}
+
+echo "Claude Task Framework — Health Check"
+echo "====================================="
+echo ""
+
+check "sqlite3 installed" "command -v sqlite3"
+check "jq installed" "command -v jq"
+check "git installed" "command -v git"
+check "python3 installed" "command -v python3"
+check "gh CLI installed" "command -v gh" optional
+check "tasks.db exists" "test -f '$DB'"
+
+if [[ -f "$DB" ]]; then
+  for table in organizations projects tasks team_members task_status_changes project_memories memory; do
+    check "table: $table" "sqlite3 '$DB' \"SELECT 1 FROM $table LIMIT 0;\""
+  done
+  # agents table is optional (only in v2+ schemas)
+  check "table: agents" "sqlite3 '$DB' \"SELECT 1 FROM agents LIMIT 0;\"" optional
+fi
+
+for script in taskctl current-focus project-context discord-notify jira-task; do
+  check "scripts/$script executable" "test -x '$ROOT/scripts/$script'"
+done
+
+for hook in session-start.sh intent-classifier.sh stop-guard.sh; do
+  check "hooks/$hook executable" "test -x '$ROOT/hooks/$hook'"
+done
+
+# Check if hooks are configured in Claude settings
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+if [[ -f "$CLAUDE_SETTINGS" ]]; then
+  if grep -q "session-start" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    printf "$PASS hooks configured in ~/.claude/settings.json\n"
+  else
+    printf "$WARN hooks not found in ~/.claude/settings.json (run setup.sh to install)\n"
+  fi
+else
+  printf "$WARN ~/.claude/settings.json not found\n"
+fi
+
+echo ""
+if [[ "$errors" -gt 0 ]]; then
+  echo "$errors issue(s) found. Fix the [FAIL] items above."
+  exit 1
+else
+  echo "All checks passed."
+fi

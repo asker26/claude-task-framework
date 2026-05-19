@@ -122,9 +122,24 @@ CREATE TABLE memory (
     ended_at TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Agents: track autonomous agent runs against tasks (future multi-agent support)
+CREATE TABLE agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER REFERENCES tasks(id),
+    agent_type TEXT NOT NULL DEFAULT 'claude-code',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    result TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 SQL
 
 echo "Created tasks.db at: $DB"
 echo ""
-echo "Quick start — add your first project:"
-echo "  sqlite3 $DB \"INSERT INTO projects (name, local_path, description) VALUES ('my-app', '$HOME/projects/my-app', 'My first project');\""
+echo "Quick start:"
+echo "  ./scripts/taskctl add-org \"My Team\""
+echo "  ./scripts/taskctl add-project \"my-app\" --org \"My Team\" --path ~/projects/my-app"
+echo "  ./scripts/taskctl add-task \"First feature\" --project \"my-app\" --priority high"
+echo "  ./scripts/taskctl dashboard"
