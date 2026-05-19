@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+
+task_id="${1:-}"
+agent_id="${2:-}"
+
+if [[ -z "$task_id" || -z "$agent_id" ]]; then
+  echo "usage: agent-wrapper <task_id> <agent_id>" >&2
+  exit 1
+fi
+
+# Load task and project info
+task_row="$(sqlite3 "$DB" "
+  SELECT t.title, t.priority, t.notes, t.type, p.name, p.local_path
+  FROM tasks t
+  LEFT JOIN projects p ON p.id = t.project_id
+  WHERE t.id = $task_id;
+" 2>/dev/null)"
+
+if [[ -z "$task_row" ]]; then
+  echo "task $task_id not found" >&2
+  sqlite3 "$DB" "UPDATE agents SET status='failed', result='task not found', completed_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
+  exit 1
+fi
+
+IFS='|' read -r title priority notes task_type proj_name local_path <<< "$task_row"
+
+if [[ -z "$local_path" ]]; then
+  echo "task $task_id has no project with a local_path" >&2
+  sqlite3 "$DB" "UPDATE agents SET status='failed', result='no project local_path', completed_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
+  exit 1
+fi
+
+# Resolve real path (expand ~)
+local_path="${local_path/#\~/$HOME}"
+
+if [[ ! -d "$local_path" ]]; then
+  echo "project path does not exist: $local_path" >&2
+  sqlite3 "$DB" "UPDATE agents SET status='failed', result='project path missing: $local_path', completed_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
+  exit 1
+fi
+
+# Create worktree
+worktree_base="$ROOT/.workspaces"
+worktree_dir="$worktree_base/agent-${task_id}"
+branch_name="task-${task_id}"
+
+if [[ -d "$worktree_dir" ]]; then
+  echo "Cleaning up stale worktree..."
+  git -C "$local_path" worktree remove "$worktree_dir" --force 2>/dev/null || rm -rf "$worktree_dir"
+fi
+
+echo "Creating worktree at $worktree_dir on branch $branch_name..."
+mkdir -p "$worktree_base"
+git -C "$local_path" worktree add "$worktree_dir" -b "$branch_name" 2>/dev/null || \
+  git -C "$local_path" worktree add "$worktree_dir" "$branch_name" 2>/dev/null || \
+  git -C "$local_path" worktree add "$worktree_dir" 2>/dev/null
+
+cd "$worktree_dir"
+
+# Store PID location
+sqlite3 "$DB" "UPDATE agents SET pid=$$, heartbeat_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
+
+# Build prompt
+prompt="You are working on task #${task_id}: ${title}.
+Type: ${task_type}. Priority: ${priority}.
+Project: ${proj_name}.
+${notes:+Notes: $notes}
+
+Complete this task autonomously. Write code, run tests, and commit your changes when done.
+You are working in a git worktree on branch '${branch_name}'. Commit to this branch."
+
+# Check for resume session
+cli_session="$(sqlite3 "$DB" "SELECT cli_session_id FROM agents WHERE id=$agent_id;" 2>/dev/null)"
+
+# Build claude command
+claude_cmd=(claude --dangerously-skip-permissions -p "$prompt")
+if [[ -n "$cli_session" ]]; then
+  claude_cmd=(claude --dangerously-skip-permissions --resume "$cli_session" -p "$prompt")
+fi
+
+echo "=== Agent #${agent_id} starting on task #${task_id}: ${title} ==="
+echo "=== Worktree: ${worktree_dir} ==="
+echo "=== Branch: ${branch_name} ==="
+echo ""
+
+# Execute with heartbeat on each output line
+exit_code=0
+"${claude_cmd[@]}" 2>&1 | while IFS= read -r line; do
+  echo "$line"
+  sqlite3 "$DB" "UPDATE agents SET heartbeat_at=CURRENT_TIMESTAMP WHERE id=$agent_id;" 2>/dev/null
+done || exit_code=${PIPESTATUS[0]}
+
+# Capture exit code from the pipe
+if [[ $exit_code -eq 0 ]]; then
+  exit_code=${PIPESTATUS[0]:-0}
+fi
+
+echo ""
+echo "=== Agent #${agent_id} finished (exit code: $exit_code) ==="
+
+# Call agent-complete
+"$ROOT/scripts/agent-complete" "$agent_id" "$exit_code"
+
+# Keep pane open briefly for inspection
+sleep 5
