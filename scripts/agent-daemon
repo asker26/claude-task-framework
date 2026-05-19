@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
+MAX_AGENTS="${CTF_MAX_AGENTS:-3}"
+INTERVAL=30
+
+cmd="${1:-start}"
+
+daemon_loop() {
+  local cycle=0
+  echo "Agent daemon started (max=$MAX_AGENTS, interval=${INTERVAL}s, stuck=${CTF_STUCK_TIMEOUT:-10}m)"
+  echo "Press Ctrl+C to stop."
+  echo ""
+
+  while true; do
+    cycle=$((cycle + 1))
+
+    # Run watcher
+    watcher_out="$("$ROOT/scripts/agent-watcher" 2>&1)" || true
+
+    # Fill available slots
+    dispatched=0
+    running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='running';" 2>/dev/null)"
+    slots=$((MAX_AGENTS - running))
+
+    while [[ "$slots" -gt 0 ]]; do
+      dispatch_out="$("$ROOT/scripts/agent-dispatch" 2>&1)" || true
+      if echo "$dispatch_out" | grep -q "dispatched agent"; then
+        dispatched=$((dispatched + 1))
+        slots=$((slots - 1))
+      else
+        break
+      fi
+    done
+
+    running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='running';" 2>/dev/null)"
+    ts="$(date '+%H:%M:%S')"
+    echo "[$ts] cycle $cycle: ${running}/${MAX_AGENTS} running, $dispatched dispatched | $watcher_out"
+
+    sleep "$INTERVAL"
+  done
+}
+
+case "$cmd" in
+  start)
+    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+      tmux new-session -d -s "$TMUX_SESSION" -n "daemon" "$0 run"
+      echo "daemon started in tmux session: $TMUX_SESSION"
+      echo "  attach: tmux attach -t $TMUX_SESSION"
+    else
+      if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -q '^daemon$'; then
+        echo "daemon already running in $TMUX_SESSION:daemon"
+        exit 0
+      fi
+      tmux new-window -t "$TMUX_SESSION" -n "daemon" "$0 run"
+      echo "daemon started in existing tmux session: $TMUX_SESSION:daemon"
+    fi
+    ;;
+  stop)
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+      tmux kill-window -t "$TMUX_SESSION:daemon" 2>/dev/null || true
+      echo "daemon stopped"
+    else
+      echo "no tmux session found"
+    fi
+    ;;
+  restart)
+    "$0" stop
+    sleep 1
+    "$0" start
+    ;;
+  run)
+    daemon_loop
+    ;;
+  *)
+    echo "usage: agent-daemon start|stop|restart" >&2
+    exit 1
+    ;;
+esac
