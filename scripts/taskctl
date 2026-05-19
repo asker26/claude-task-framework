@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+
+if [[ ! -f "$DB" ]]; then
+  echo "tasks.db not found at: $DB" >&2
+  exit 1
+fi
+
+cmd="${1:-}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+sql_read() {
+  sqlite3 -readonly -header -column "$DB" "$1"
+}
+
+sql_scalar() {
+  sqlite3 -readonly "$DB" "$1"
+}
+
+sql_escape() {
+  printf "%s" "$1" | sed "s/'/''/g"
+}
+
+task_query() {
+  local project_name="$1"
+  local open_only="${2:-0}"
+  local project_escaped
+  project_escaped="$(sql_escape "$project_name")"
+
+  local status_filter=""
+  if [[ "$open_only" == "1" ]]; then
+    status_filter="AND t.status != 'done'"
+  fi
+
+  sql_read "
+    SELECT t.id,
+           t.title,
+           t.status,
+           t.priority
+    FROM tasks t
+    JOIN projects p ON p.id = t.project_id
+    WHERE p.name = '${project_escaped}'
+      ${status_filter}
+    ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+             t.updated_at DESC
+    LIMIT 50;
+  "
+}
+
+project_json_query() {
+  local where_clause="$1"
+  sql_scalar "
+    SELECT json_object(
+      'id', p.id,
+      'name', p.name,
+      'local_path', p.local_path,
+      'organization_id', p.organization_id,
+      'description', p.description,
+      'org_name', o.name,
+      'jira_project_key', o.jira_project_key,
+      'discord_webhook_url', o.discord_webhook_url,
+      'has_discord_webhook', CASE WHEN COALESCE(o.discord_webhook_url, '') != '' THEN 1 ELSE 0 END
+    )
+    FROM projects p
+    LEFT JOIN organizations o ON o.id = p.organization_id
+    WHERE ${where_clause}
+    LIMIT 1;
+  "
+}
+
+case "$cmd" in
+  projects)
+    sql_read "
+      SELECT id, name, COALESCE(local_path, '') AS local_path
+      FROM projects
+      ORDER BY name;
+    "
+    ;;
+  active)
+    sql_read "
+      SELECT t.id,
+             t.title,
+             t.status,
+             t.priority,
+             COALESCE(p.name, '-') AS project
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.status IN ('in-progress', 'testing')
+      ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               t.updated_at DESC
+      LIMIT 20;
+    "
+    ;;
+  active-high-json)
+    sql_scalar "
+      SELECT COALESCE(
+        json_group_array(
+          json_object('title', title, 'project', project)
+        ),
+        '[]'
+      )
+      FROM (
+        SELECT t.title AS title,
+               COALESCE(p.name, '-') AS project
+        FROM tasks t
+        LEFT JOIN projects p ON p.id = t.project_id
+        WHERE t.status = 'in-progress' AND t.priority IN ('high', 'critical')
+        ORDER BY t.updated_at DESC
+        LIMIT 3
+      );
+    "
+    ;;
+  focus)
+    sql_read "
+      SELECT t.id,
+             t.title,
+             t.status,
+             t.priority,
+             COALESCE(p.name, '-') AS project
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.status IN ('in-progress', 'todo')
+      ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               t.updated_at DESC
+      LIMIT 10;
+    "
+    ;;
+  project)
+    project_name="${1:-}"
+    if [[ -z "$project_name" ]]; then
+      echo "usage: taskctl project <project-name>" >&2
+      exit 1
+    fi
+    project_name_escaped="$(sql_escape "$project_name")"
+    project_json_query "p.name = '${project_name_escaped}'"
+    ;;
+  project-from-cwd)
+    cwd_input="${1:-$PWD}"
+    cwd_escaped="$(sql_escape "$cwd_input")"
+    project_json_query "'${cwd_escaped}' LIKE p.local_path || '%' ORDER BY length(p.local_path) DESC"
+    ;;
+  team-member)
+    github_username="${1:-}"
+    if [[ -z "$github_username" ]]; then
+      echo "usage: taskctl team-member <github-username>" >&2
+      exit 1
+    fi
+    github_escaped="$(sql_escape "$github_username")"
+    sql_scalar "
+      SELECT json_object(
+        'id', tm.id,
+        'name', tm.name,
+        'github_username', tm.github_username,
+        'discord_id', tm.discord_id,
+        'organization_id', tm.organization_id,
+        'jira_user_id', tm.jira_user_id
+      )
+      FROM team_members tm
+      WHERE tm.github_username = '${github_escaped}'
+      LIMIT 1;
+    "
+    ;;
+  tasks)
+    project="${1:-}"
+    if [[ -z "$project" ]]; then
+      echo "usage: taskctl tasks <project-name> [--open]" >&2
+      exit 1
+    fi
+    open_only=0
+    if [[ "${2:-}" == "--open" || "${2:-}" == "--todo-only" ]]; then
+      open_only=1
+    fi
+    task_query "$project" "$open_only"
+    ;;
+  tasks-open)
+    project="${1:-}"
+    if [[ -z "$project" ]]; then
+      echo "usage: taskctl tasks-open <project-name>" >&2
+      exit 1
+    fi
+    task_query "$project" 1
+    ;;
+  set-status)
+    id="${1:-}"
+    status="${2:-}"
+    if [[ -z "$id" || -z "$status" ]]; then
+      echo "usage: taskctl set-status <id> <status>" >&2
+      exit 1
+    fi
+    if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+      echo "task id must be numeric" >&2
+      exit 1
+    fi
+    status_escaped="$(sql_escape "$status")"
+    sqlite3 "$DB" "
+      UPDATE tasks
+      SET status = '${status_escaped}',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id};
+    "
+    echo "updated task $id -> $status"
+    ;;
+  *)
+    cat <<'USAGE'
+usage: taskctl <command>
+
+commands:
+  projects
+  active
+  active-high-json
+  focus
+  project <project-name>
+  project-from-cwd [cwd]
+  team-member <github-username>
+  tasks <project-name> [--open]
+  tasks-open <project-name>
+  set-status <id> <status>
+USAGE
+    exit 1
+    ;;
+esac

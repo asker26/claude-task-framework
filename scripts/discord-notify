@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASKCTL="$ROOT/scripts/taskctl"
+TEMPLATES_DIR="$ROOT/templates"
+
+# Default reviewer/sender from env, or fallback to git user
+DEFAULT_USER="${DISCORD_DEFAULT_USER:-$(git config user.name 2>/dev/null || echo 'unknown')}"
+
+kind="${1:-}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+project=""
+github_username=""
+discord_id_override=""
+dry_run=0
+message=""
+sender=""
+title=""
+pr_number=""
+pr_title=""
+pr_url=""
+repo=""
+reviewer="$DEFAULT_USER"
+jira_key=""
+jira_summary=""
+old_status=""
+new_status=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) project="${2:-}"; shift 2 ;;
+    --github) github_username="${2:-}"; shift 2 ;;
+    --discord-id) discord_id_override="${2:-}"; shift 2 ;;
+    --message) message="${2:-}"; shift 2 ;;
+    --sender) sender="${2:-}"; shift 2 ;;
+    --title) title="${2:-}"; shift 2 ;;
+    --pr-number) pr_number="${2:-}"; shift 2 ;;
+    --pr-title) pr_title="${2:-}"; shift 2 ;;
+    --pr-url) pr_url="${2:-}"; shift 2 ;;
+    --repo) repo="${2:-}"; shift 2 ;;
+    --reviewer) reviewer="${2:-}"; shift 2 ;;
+    --jira-key) jira_key="${2:-}"; shift 2 ;;
+    --jira-summary) jira_summary="${2:-}"; shift 2 ;;
+    --old-status) old_status="${2:-}"; shift 2 ;;
+    --new-status) new_status="${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$kind" ]]; then
+  echo "usage: discord-notify <pr-review|jira-status|custom> [options]" >&2
+  exit 1
+fi
+
+if [[ -z "$project" ]]; then
+  echo "--project is required" >&2
+  exit 1
+fi
+
+project_json="$($TASKCTL project "$project")"
+if [[ -z "$project_json" || "$project_json" == "null" ]]; then
+  echo "project not found: $project" >&2
+  exit 1
+fi
+
+webhook_url="$(printf '%s' "$project_json" | jq -r '.discord_webhook_url // empty')"
+if [[ -z "$webhook_url" ]]; then
+  echo "skipped: no discord webhook configured for project '$project'"
+  exit 0
+fi
+
+discord_id="$discord_id_override"
+if [[ -z "$discord_id" && -n "$github_username" ]]; then
+  member_json="$($TASKCTL team-member "$github_username")"
+  if [[ -n "$member_json" && "$member_json" != "null" ]]; then
+    discord_id="$(printf '%s' "$member_json" | jq -r '.discord_id // empty')"
+  fi
+fi
+
+if [[ "$kind" != "custom" && -z "$discord_id" ]]; then
+  echo "discord id not found; provide --github or --discord-id" >&2
+  exit 1
+fi
+
+if [[ "$kind" == "pr-review" && -z "$message" ]]; then
+  message="New review comments left — please check and address."
+fi
+if [[ "$kind" == "jira-status" && -z "$message" ]]; then
+  message="Status updated in Jira."
+fi
+if [[ "$kind" == "custom" && -z "$title" ]]; then
+  title="Message"
+fi
+if [[ "$kind" == "custom" && -z "$sender" ]]; then
+  sender="$DEFAULT_USER"
+fi
+if [[ -n "$jira_key" ]]; then
+  jira_base="${JIRA_BASE_URL:-https://your-instance.atlassian.net/browse}"
+  jira_url="${jira_base}/${jira_key}"
+else
+  jira_url=""
+fi
+
+case "$kind" in
+  pr-review)
+    [[ -n "$pr_number" && -n "$pr_title" && -n "$pr_url" && -n "$repo" ]] || {
+      echo "pr-review requires --pr-number --pr-title --pr-url --repo" >&2
+      exit 1
+    }
+    template_path="$TEMPLATES_DIR/pr_review.json"
+    ;;
+  jira-status)
+    [[ -n "$jira_key" && -n "$jira_summary" && -n "$old_status" && -n "$new_status" ]] || {
+      echo "jira-status requires --jira-key --jira-summary --old-status --new-status" >&2
+      exit 1
+    }
+    template_path="$TEMPLATES_DIR/jira_status.json"
+    ;;
+  custom)
+    [[ -n "$message" ]] || {
+      echo "custom requires --message" >&2
+      exit 1
+    }
+    template_path=""
+    ;;
+  *)
+    echo "unknown kind: $kind" >&2
+    exit 1
+    ;;
+esac
+
+payload="$({
+  export TEMPLATE_PATH="$template_path"
+  export KIND="$kind"
+  export DISCORD_ID="$discord_id"
+  export MESSAGE="$message"
+  export SENDER="$sender"
+  export TITLE="$title"
+  export PR_NUMBER="$pr_number"
+  export PR_TITLE="$pr_title"
+  export PR_URL="$pr_url"
+  export REPO="$repo"
+  export REVIEWER="$reviewer"
+  export JIRA_KEY="$jira_key"
+  export JIRA_URL="$jira_url"
+  export JIRA_SUMMARY="$jira_summary"
+  export OLD_STATUS="$old_status"
+  export NEW_STATUS="$new_status"
+  python3 <<'PY'
+import json
+import os
+from pathlib import Path
+
+kind = os.environ['KIND']
+template_path = os.environ['TEMPLATE_PATH']
+if kind == 'custom':
+    payload = {
+        'content': f"<@{os.environ['DISCORD_ID']}>" if os.environ.get('DISCORD_ID') else '',
+        'embeds': [{
+            'title': os.environ['TITLE'],
+            'color': 5793266,
+            'fields': [
+                {'name': 'From', 'value': os.environ['SENDER'], 'inline': True},
+                {'name': 'Message', 'value': os.environ['MESSAGE'], 'inline': False},
+            ],
+        }],
+    }
+else:
+    template = Path(template_path).read_text()
+    replacements = {
+        'discord_id': os.environ.get('DISCORD_ID', ''),
+        'message': os.environ.get('MESSAGE', ''),
+        'pr_number': os.environ.get('PR_NUMBER', ''),
+        'pr_title': os.environ.get('PR_TITLE', ''),
+        'pr_url': os.environ.get('PR_URL', ''),
+        'repo': os.environ.get('REPO', ''),
+        'reviewer': os.environ.get('REVIEWER', ''),
+        'jira_key': os.environ.get('JIRA_KEY', ''),
+        'jira_url': os.environ.get('JIRA_URL', ''),
+        'jira_summary': os.environ.get('JIRA_SUMMARY', ''),
+        'old_status': os.environ.get('OLD_STATUS', ''),
+        'new_status': os.environ.get('NEW_STATUS', ''),
+    }
+    for key, value in replacements.items():
+        template = template.replace('{{' + key + '}}', value)
+    payload = json.loads(template)
+print(json.dumps(payload, separators=(',', ':')))
+PY
+} )"
+
+if [[ "$dry_run" -eq 1 ]]; then
+  printf '%s\n' "$payload"
+  exit 0
+fi
+
+printf '%s' "$payload" | curl -fsS -X POST -H 'Content-Type: application/json' --data @- "$webhook_url"
+printf '\n'

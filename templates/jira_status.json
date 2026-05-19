@@ -1,0 +1,12 @@
+{
+  "content": "<@{{discord_id}}>",
+  "embeds": [{
+    "title": "Jira Status Update",
+    "color": 3447003,
+    "fields": [
+      {"name": "Issue", "value": "[{{jira_key}} - {{jira_summary}}]({{jira_url}})", "inline": false},
+      {"name": "Status", "value": "{{old_status}} -> {{new_status}}", "inline": true},
+      {"name": "Message", "value": "{{message}}", "inline": false}
+    ]
+  }]
+}

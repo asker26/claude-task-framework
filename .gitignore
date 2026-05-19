@@ -1,0 +1,9 @@
+*.db
+*.db-journal
+.workspaces/
+.mcp.json
+.claude/
+.DS_Store
+backups/
+*.log
+.idea/

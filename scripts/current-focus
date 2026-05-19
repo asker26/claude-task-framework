@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TASKCTL="$ROOT/scripts/taskctl"
+
+TARGET_CWD="${1:-$PWD}"
+
+echo "CURRENT FOCUS"
+echo
+
+echo "Project from cwd:"
+"$TASKCTL" project-from-cwd "$TARGET_CWD"
+echo
+
+echo "Top focus tasks:"
+"$TASKCTL" focus
+echo
+
+echo "Active tasks:"
+"$TASKCTL" active

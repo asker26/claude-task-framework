@@ -1,0 +1,54 @@
+# CLAUDE.md — Example Template
+
+# Copy this to your home directory (~/) or project root and customize it.
+# This file is loaded into every Claude Code conversation.
+
+## Environment
+
+env: macOS, home=$HOME
+
+# Project paths — adjust to your layout
+# PHP/WP: ~/PhpstormProjects/
+# Go: ~/GolandProjects/
+# Python: ~/PycharmProjects/
+# JS/TS: ~/WebstormProjects/
+# .NET: ~/RiderProjects/
+
+## Task Management
+
+db: ~/claude-task-framework/tasks.db (SQLite)
+tables: organizations, projects, tasks, team_members, project_memories, task_status_changes, memory
+subtasks: parent_task_id, recursive
+design: docs/plans/task-management-design.md
+
+## Rules
+
+- Confirm target project before editing from ~/
+- cd into project dir before operations
+- Read project-level configs first (CLAUDE.md, .claude/, etc.)
+- Update existing docs when changing a project
+
+## Jira (Optional)
+
+# Uncomment and configure if you use Jira:
+# cli: /opt/homebrew/bin/acli
+# project: MYPROJECT (your-instance.atlassian.net)
+# Set env vars: JIRA_DEFAULT_PROJECT, JIRA_BASE_URL
+
+## Discord (Optional)
+
+# Templates: ~/claude-task-framework/templates/ (pr_review.json, jira_status.json, etc.)
+# Configure discord_webhook_url in the organizations table.
+
+## Autonomy
+
+# What Claude can do without asking:
+DO (no asking): read/write/edit code, run tests, install deps, git commit/push/branch, create PRs
+
+# What requires confirmation:
+ASK FIRST: force-push, reset --hard, delete branches, drop tables, destructive migrations, production deploy
+
+## Style
+
+# Adjust to your preferences:
+Terse. Action-first. One question max. Opinionated — recommend, don't list.

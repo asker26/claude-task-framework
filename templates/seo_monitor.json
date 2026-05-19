@@ -1,0 +1,16 @@
+{
+  "embeds": [{
+    "title": "{{title}}",
+    "color": "{{color}}",
+    "description": "{{summary}}",
+    "fields": [
+      {"name": "Pages Checked", "value": "{{pages_checked}}", "inline": true},
+      {"name": "Status", "value": "{{status}}", "inline": true},
+      {"name": "Avg Response Time", "value": "{{avg_response_time}}", "inline": true},
+      {"name": "Issues", "value": "{{issues}}", "inline": false},
+      {"name": "Blog Posts", "value": "{{blog_count}}", "inline": true},
+      {"name": "Sitemap Entries", "value": "{{sitemap_count}}", "inline": true}
+    ],
+    "footer": {"text": "Weekly SEO monitor"}
+  }]
+}

@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_PROJECT="${JIRA_DEFAULT_PROJECT:-MYPROJECT}"
+DEFAULT_BASE_URL="${JIRA_BASE_URL:-https://your-instance.atlassian.net/browse}"
+
+resolve_acli() {
+  if [[ -n "${ACLI_PATH:-}" && -x "${ACLI_PATH}" ]]; then
+    printf '%s\n' "$ACLI_PATH"
+    return
+  fi
+  if command -v acli >/dev/null 2>&1; then
+    command -v acli
+    return
+  fi
+  if [[ -x /opt/homebrew/bin/acli ]]; then
+    printf '%s\n' /opt/homebrew/bin/acli
+    return
+  fi
+  echo "acli not found" >&2
+  exit 1
+}
+
+normalize_key() {
+  local input="$1"
+  if [[ "$input" =~ ([A-Z][A-Z0-9]+-[0-9]+) ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$input" =~ \[([0-9]+)\] ]]; then
+    printf '%s\n' "${DEFAULT_PROJECT}-${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$input" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "${DEFAULT_PROJECT}-${input}"
+    return
+  fi
+  echo "could not extract Jira key from: $input" >&2
+  exit 1
+}
+
+ACLI_BIN="$(resolve_acli)"
+cmd="${1:-}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+
+case "$cmd" in
+  extract-key)
+    text="${1:-}"
+    if [[ -z "$text" ]]; then
+      echo "usage: jira-task extract-key <text-or-url>" >&2
+      exit 1
+    fi
+    normalize_key "$text"
+    ;;
+  browse-url)
+    ref="${1:-}"
+    if [[ -z "$ref" ]]; then
+      echo "usage: jira-task browse-url <issue-ref>" >&2
+      exit 1
+    fi
+    key="$(normalize_key "$ref")"
+    printf '%s/%s\n' "$DEFAULT_BASE_URL" "$key"
+    ;;
+  view)
+    ref="${1:-}"
+    if [[ -z "$ref" ]]; then
+      echo "usage: jira-task view <issue-ref> [extra acli args...]" >&2
+      exit 1
+    fi
+    shift
+    key="$(normalize_key "$ref")"
+    "$ACLI_BIN" jira workitem view "$key" "$@"
+    ;;
+  comments)
+    ref="${1:-}"
+    if [[ -z "$ref" ]]; then
+      echo "usage: jira-task comments <issue-ref> [extra acli args...]" >&2
+      exit 1
+    fi
+    shift
+    key="$(normalize_key "$ref")"
+    "$ACLI_BIN" jira workitem comment list --key "$key" "$@"
+    ;;
+  search)
+    jql="${1:-}"
+    if [[ -z "$jql" ]]; then
+      echo "usage: jira-task search <jql> [extra acli args...]" >&2
+      exit 1
+    fi
+    shift
+    "$ACLI_BIN" jira workitem search --jql "$jql" "$@"
+    ;;
+  transition)
+    ref="${1:-}"
+    status="${2:-}"
+    if [[ -z "$ref" || -z "$status" ]]; then
+      echo "usage: jira-task transition <issue-ref> <status> [extra acli args...]" >&2
+      exit 1
+    fi
+    shift 2
+    key="$(normalize_key "$ref")"
+    "$ACLI_BIN" jira workitem transition --key "$key" --status "$status" "$@"
+    ;;
+  comment)
+    ref="${1:-}"
+    body="${2:-}"
+    if [[ -z "$ref" || -z "$body" ]]; then
+      echo "usage: jira-task comment <issue-ref> <body>" >&2
+      exit 1
+    fi
+    shift 2
+    key="$(normalize_key "$ref")"
+    "$ACLI_BIN" jira workitem comment create --key "$key" --body "$body" "$@"
+    ;;
+  assign)
+    ref="${1:-}"
+    assignee="${2:-}"
+    if [[ -z "$ref" || -z "$assignee" ]]; then
+      echo "usage: jira-task assign <issue-ref> <assignee>" >&2
+      exit 1
+    fi
+    shift 2
+    key="$(normalize_key "$ref")"
+    "$ACLI_BIN" jira workitem assign --key "$key" --assignee "$assignee" "$@"
+    ;;
+  create)
+    if [[ $# -eq 0 ]]; then
+      echo "usage: jira-task create --project <key> --type <type> --summary <summary> [extra acli args...]" >&2
+      exit 1
+    fi
+    "$ACLI_BIN" jira workitem create "$@"
+    ;;
+  boards)
+    "$ACLI_BIN" jira board list "$@"
+    ;;
+  sprints)
+    board_id="${1:-}"
+    if [[ -z "$board_id" ]]; then
+      echo "usage: jira-task sprints <board-id> [extra acli args...]" >&2
+      exit 1
+    fi
+    shift
+    "$ACLI_BIN" jira sprint list --board-id "$board_id" "$@"
+    ;;
+  *)
+    cat <<'USAGE'
+usage: jira-task <command>
+
+commands:
+  extract-key <text-or-url>
+  browse-url <issue-ref>
+  view <issue-ref> [extra acli args...]
+  comments <issue-ref> [extra acli args...]
+  search <jql> [extra acli args...]
+  transition <issue-ref> <status> [extra acli args...]
+  comment <issue-ref> <body>
+  assign <issue-ref> <assignee>
+  create --project <key> --type <type> --summary <summary> [extra acli args...]
+  boards [extra acli args...]
+  sprints <board-id> [extra acli args...]
+USAGE
+    exit 1
+    ;;
+esac

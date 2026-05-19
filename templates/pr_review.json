@@ -1,0 +1,14 @@
+{
+  "content": "<@{{discord_id}}>",
+  "embeds": [{
+    "title": "PR Review Update",
+    "color": 16744256,
+    "fields": [
+      {"name": "PR", "value": "[#{{pr_number}} - {{pr_title}}]({{pr_url}})", "inline": false},
+      {"name": "Repo", "value": "{{repo}}", "inline": true},
+      {"name": "Reviewer", "value": "{{reviewer}}", "inline": true},
+      {"name": "Jira", "value": "[{{jira_key}}]({{jira_url}})", "inline": true},
+      {"name": "Message", "value": "{{message}}", "inline": false}
+    ]
+  }]
+}
