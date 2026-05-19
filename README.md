@@ -9,6 +9,7 @@ A task management and autonomous execution framework for [Claude Code](https://d
 - **Autonomous execution** — Intent-classifier hook detects what you're trying to do (feature, bugfix, refactor, deploy, review) and chains the full workflow automatically.
 - **Stop guard** — Prevents Claude from stopping mid-chain. If it tries to exit before finishing, the hook sends it back to complete the remaining steps.
 - **Integrations** — Scripts for Discord notifications (via webhooks) and Jira operations (via `acli` CLI).
+- **Multi-agent execution** — Dispatch multiple Claude Code sessions in parallel via tmux. Priority scheduling, heartbeat monitoring, stuck recovery, dependency cascading, and git worktree isolation.
 
 ## Quick Start
 
@@ -88,7 +89,13 @@ claude-task-framework/
 ├── scripts/
 │   ├── taskctl                # CLI for querying + managing tasks.db
 │   ├── doctor                 # Health check (deps, DB, hooks, permissions)
-│   ├── agent-dispatch         # Multi-agent entry point (stub)
+│   ├── agent-dispatch         # Claim task + spawn agent in tmux
+│   ├── agent-wrapper          # Agent lifecycle (prompt, heartbeat, complete)
+│   ├── agent-complete         # Handle result + dependency cascade
+│   ├── agent-watcher          # Detect stuck agents, kill + retry/pause
+│   ├── agent-daemon           # 30s loop: watcher + dispatch
+│   ├── agent-status           # Show running/queued/recent agents
+│   ├── migrate-v3.sh          # Migrate existing DB to v3 schema
 │   ├── current-focus          # Shows current priority + active tasks
 │   ├── project-context        # Resolves project from cwd
 │   ├── discord-notify         # Sends Discord webhook notifications
@@ -176,6 +183,38 @@ scripts/taskctl dashboard
 scripts/doctor    # Verify DB, deps, hooks, and script permissions
 ```
 
+### Multi-Agent Execution
+
+Dispatch multiple Claude Code sessions to work on tasks in parallel:
+
+```bash
+# Start the daemon (manages agents automatically)
+scripts/agent-daemon start
+
+# Or dispatch tasks manually
+scripts/agent-dispatch              # Dispatch highest-priority eligible task
+scripts/agent-dispatch 42           # Dispatch specific task
+
+# Monitor
+scripts/agent-status                # Overview of all agents
+tmux attach -t ctf-agents           # Watch agents live
+tmux attach -t ctf-agents:agent-42  # Watch specific agent
+
+# Manual control
+scripts/agent-watcher               # Run one health check cycle
+scripts/agent-daemon stop           # Stop the daemon (agents keep running)
+```
+
+Each agent runs in a git worktree on its own branch. When a task completes, dependent tasks are automatically dispatched.
+
+Set up task dependencies:
+```bash
+scripts/taskctl add-task "Build API" --project "my-app" --priority high
+scripts/taskctl add-task "Build frontend" --project "my-app" --depends-on "[1]"
+scripts/taskctl add-task "Write docs" --project "my-app" --depends-on "[1,2]"
+# Dispatching task 1 will cascade to 2 and 3 as they complete
+```
+
 ### discord-notify
 
 Send formatted Discord notifications:
@@ -249,6 +288,9 @@ The `skills/appstoreconnect/` skill provides a workflow for managing App Store m
 | `JIRA_BASE_URL` | `https://your-instance.atlassian.net/browse` | Jira browse URL |
 | `ACLI_PATH` | auto-detect | Path to Jira `acli` CLI |
 | `DISCORD_DEFAULT_USER` | git user name | Default reviewer/sender name |
+| `CTF_MAX_AGENTS` | `3` | Max concurrent agents |
+| `CTF_STUCK_TIMEOUT` | `10` | Minutes before agent considered stuck |
+| `CTF_TMUX_SESSION` | `ctf-agents` | tmux session name |
 
 ## Requirements
 
@@ -259,6 +301,7 @@ The `skills/appstoreconnect/` skill provides a workflow for managing App Store m
 - Git + GitHub CLI (`gh`) for PR creation
 - `acli` (optional, for Jira integration)
 - Python 3 (used by discord-notify for template rendering)
+- tmux (for multi-agent execution)
 
 ## License
 
