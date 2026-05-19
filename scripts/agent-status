@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+MAX_AGENTS="${CTF_MAX_AGENTS:-3}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
+
+if [[ ! -f "$DB" ]]; then
+  echo "tasks.db not found" >&2
+  exit 1
+fi
+
+echo "AGENT STATUS"
+echo "============"
+
+# Running agents
+running_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='running';")"
+echo "Running ($running_count/$MAX_AGENTS):"
+
+running_out="$(sqlite3 "$DB" "
+  SELECT printf('  %-12s task #%-4d [%-4s] %-30s %s  heartbeat %ss ago',
+    a.tmux_pane,
+    a.task_id,
+    UPPER(SUBSTR(t.priority,1,3)),
+    SUBSTR(t.title,1,30),
+    CASE
+      WHEN (strftime('%s','now') - strftime('%s',a.started_at)) >= 3600
+        THEN (strftime('%s','now') - strftime('%s',a.started_at))/3600 || 'h'
+      ELSE (strftime('%s','now') - strftime('%s',a.started_at))/60 || 'm'
+    END,
+    (strftime('%s','now') - strftime('%s',a.heartbeat_at))
+  )
+  FROM agents a
+  JOIN tasks t ON t.id = a.task_id
+  WHERE a.status = 'running'
+  ORDER BY a.started_at;
+" 2>/dev/null)"
+
+if [[ -n "$running_out" ]]; then echo "$running_out"; else echo "  (none)"; fi
+echo ""
+
+# Queue
+echo "Queue:"
+queue_out="$(sqlite3 "$DB" "
+  SELECT printf('  #%-4d [%-4s] %-30s (score: %d)',
+    t.id,
+    UPPER(SUBSTR(t.priority,1,3)),
+    SUBSTR(t.title,1,30),
+    CASE t.priority WHEN 'high' THEN 30 WHEN 'medium' THEN 20 ELSE 10 END
+      + (SELECT COUNT(*) FROM tasks d
+         WHERE d.depends_on LIKE '%' || t.id || '%' AND d.status='todo') * 10
+  )
+  FROM tasks t
+  WHERE t.status = 'todo'
+    AND t.project_id IS NOT NULL
+  ORDER BY
+    (CASE t.priority WHEN 'high' THEN 30 WHEN 'medium' THEN 20 ELSE 10 END
+     + (SELECT COUNT(*) FROM tasks d
+        WHERE d.depends_on LIKE '%' || t.id || '%' AND d.status='todo') * 10
+    ) DESC,
+    t.created_at ASC
+  LIMIT 10;
+" 2>/dev/null)"
+
+if [[ -n "$queue_out" ]]; then echo "$queue_out"; else echo "  (none)"; fi
+echo ""
+
+# Recent
+echo "Recent:"
+recent_out="$(sqlite3 "$DB" "
+  SELECT printf('  agent #%-4d task #%-4d %-10s %s',
+    a.id,
+    a.task_id,
+    a.status,
+    CASE
+      WHEN a.completed_at IS NULL THEN ''
+      WHEN (strftime('%s','now') - strftime('%s',a.completed_at)) < 3600
+        THEN (strftime('%s','now') - strftime('%s',a.completed_at))/60 || 'm ago'
+      ELSE (strftime('%s','now') - strftime('%s',a.completed_at))/3600 || 'h ago'
+    END
+  )
+  FROM agents a
+  WHERE a.status IN ('completed', 'failed')
+  ORDER BY a.completed_at DESC
+  LIMIT 5;
+" 2>/dev/null)"
+
+if [[ -n "$recent_out" ]]; then echo "$recent_out"; else echo "  (none)"; fi
+echo ""
+
+# Daemon status
+if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -q '^daemon$'; then
+    echo "Daemon: running (session: $TMUX_SESSION)"
+  else
+    echo "Daemon: stopped (tmux session exists but no daemon window)"
+  fi
+else
+  echo "Daemon: stopped (no tmux session)"
+fi
