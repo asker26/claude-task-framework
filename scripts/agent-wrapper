@@ -13,20 +13,19 @@ if [[ -z "$task_id" || -z "$agent_id" ]]; then
 fi
 
 # Load task and project info
-task_row="$(sqlite3 "$DB" "
-  SELECT t.title, t.priority, t.notes, t.type, p.name, p.local_path
-  FROM tasks t
-  LEFT JOIN projects p ON p.id = t.project_id
-  WHERE t.id = $task_id;
-" 2>/dev/null)"
+# Query each field separately to avoid delimiter issues with notes containing pipes/newlines
+title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+priority="$(sqlite3 "$DB" "SELECT priority FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+notes="$(sqlite3 "$DB" "SELECT notes FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+task_type="$(sqlite3 "$DB" "SELECT type FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+proj_name="$(sqlite3 "$DB" "SELECT p.name FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$task_id;" 2>/dev/null)"
+local_path="$(sqlite3 "$DB" "SELECT p.local_path FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$task_id;" 2>/dev/null)"
 
-if [[ -z "$task_row" ]]; then
+if [[ -z "$title" ]]; then
   echo "task $task_id not found" >&2
   sqlite3 "$DB" "UPDATE agents SET status='failed', result='task not found', completed_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
   exit 1
 fi
-
-IFS='|' read -r title priority notes task_type proj_name local_path <<< "$task_row"
 
 if [[ -z "$local_path" ]]; then
   echo "task $task_id has no project with a local_path" >&2

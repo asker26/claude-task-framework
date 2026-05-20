@@ -8,3 +8,4 @@ backups/
 *.log
 .idea/
 docs/plans/
+scripts/workflows/
