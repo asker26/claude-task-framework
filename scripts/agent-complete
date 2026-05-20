@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
 
 agent_id="${1:-}"
 exit_code="${2:-1}"
@@ -37,58 +38,26 @@ discord_notify() {
 }
 
 if [[ "$exit_code" -eq 0 ]]; then
-  # === SUCCESS ===
+  # === SUCCESS → IN-REVIEW ===
   sqlite3 "$DB" "
     UPDATE agents SET status='completed', completed_at=CURRENT_TIMESTAMP,
-           result='completed successfully' WHERE id=$agent_id;
-    UPDATE tasks SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=$task_id;
-    INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-progress', 'done');
+           result='completed, pending review' WHERE id=$agent_id;
+    UPDATE tasks SET status='in-review', updated_at=CURRENT_TIMESTAMP WHERE id=$task_id;
+    INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-progress', 'in-review');
   "
 
   title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;")"
-  echo "task #$task_id completed: $title"
-  discord_notify "Task #$task_id completed: $title"
+  echo "task #$task_id -> in-review: $title"
+  discord_notify "Task #$task_id completed, now in review: $title"
 
-  # --- Dependency cascade ---
-  candidates="$(sqlite3 "$DB" "
-    SELECT id, depends_on FROM tasks
-    WHERE status='todo' AND depends_on IS NOT NULL AND depends_on LIKE '%${task_id}%';
-  " 2>/dev/null)"
-
-  while IFS='|' read -r cand_id cand_deps; do
-    [[ -z "$cand_id" ]] && continue
-
-    dep_ids="$(echo "$cand_deps" | tr -d '[] ' | tr ',' '\n')"
-    all_done=true
-    for dep_id in $dep_ids; do
-      [[ -z "$dep_id" ]] && continue
-      dep_status="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$dep_id;" 2>/dev/null)"
-      if [[ "$dep_status" != "done" ]]; then
-        all_done=false
-        break
-      fi
-    done
-
-    if [[ "$all_done" == "true" ]]; then
-      echo "  cascade: dispatching task #$cand_id (all deps satisfied)"
-      "$ROOT/scripts/agent-dispatch" "$cand_id" 2>/dev/null || true
-    fi
-  done <<< "$candidates"
-
-  # --- Subtask cascade ---
-  parent_id="$(sqlite3 "$DB" "SELECT parent_task_id FROM tasks WHERE id=$task_id;" 2>/dev/null)"
-  if [[ -n "$parent_id" && "$parent_id" != "" ]]; then
-    pending_siblings="$(sqlite3 "$DB" "
-      SELECT COUNT(*) FROM tasks
-      WHERE parent_task_id=$parent_id AND id != $task_id AND status != 'done';
-    " 2>/dev/null)"
-    if [[ "$pending_siblings" -eq 0 ]]; then
-      parent_status="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$parent_id;" 2>/dev/null)"
-      if [[ "$parent_status" == "todo" ]]; then
-        echo "  cascade: all subtasks done, dispatching parent #$parent_id"
-        "$ROOT/scripts/agent-dispatch" "$parent_id" 2>/dev/null || true
-      fi
-    fi
+  # Spawn review agent in new tmux window
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    tmux new-window -t "$TMUX_SESSION" -n "review-${task_id}" \
+      "$ROOT/scripts/agent-review $task_id $agent_id; sleep 5; exit"
+    echo "  review dispatched: $TMUX_SESSION:review-${task_id}"
+  else
+    echo "  warning: no tmux session, running review inline"
+    "$ROOT/scripts/agent-review" "$task_id" "$agent_id"
   fi
 
 else

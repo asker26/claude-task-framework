@@ -61,11 +61,33 @@ while IFS='|' read -r agent_id task_id pane pid retry_count; do
   fi
 done <<< "$stuck"
 
+# Find orphaned in-review tasks (no running reviewer agent)
+orphaned_reviews="$(sqlite3 "$DB" "
+  SELECT t.id FROM tasks t
+  WHERE t.status = 'in-review'
+    AND NOT EXISTS (
+      SELECT 1 FROM agents a
+      WHERE a.task_id = t.id AND a.status = 'running'
+    )
+    AND t.updated_at < datetime('now', '-2 minutes');
+" 2>/dev/null)"
+
+while IFS= read -r orphan_task_id; do
+  [[ -z "$orphan_task_id" ]] && continue
+  echo "orphaned in-review task #$orphan_task_id, re-dispatching review"
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    tmux new-window -t "$TMUX_SESSION" -n "review-${orphan_task_id}" \
+      "$ROOT/scripts/agent-review $orphan_task_id; sleep 5; exit"
+  fi
+  recovered=$((recovered + 1))
+done <<< "$orphaned_reviews"
+
 # Clean up orphaned tmux windows
 if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
   tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | while read -r win; do
-    if [[ "$win" == agent-* ]]; then
+    if [[ "$win" == agent-* || "$win" == review-* ]]; then
       t_id="${win#agent-}"
+      t_id="${t_id#review-}"
       running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE task_id=$t_id AND status='running';" 2>/dev/null)"
       if [[ "$running" -eq 0 ]]; then
         echo "orphan tmux window: $win (no running agent), killing"

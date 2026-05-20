@@ -66,6 +66,27 @@ queue_out="$(sqlite3 "$DB" "
 if [[ -n "$queue_out" ]]; then echo "$queue_out"; else echo "  (none)"; fi
 echo ""
 
+# In Review
+echo "In Review:"
+review_out="$(sqlite3 "$DB" "
+  SELECT printf('  #%-4d %-30s %s ago',
+    t.id,
+    SUBSTR(t.title,1,30),
+    CASE
+      WHEN (strftime('%s','now') - strftime('%s',t.updated_at)) >= 3600
+        THEN (strftime('%s','now') - strftime('%s',t.updated_at))/3600 || 'h'
+      ELSE (strftime('%s','now') - strftime('%s',t.updated_at))/60 || 'm'
+    END
+  )
+  FROM tasks t
+  WHERE t.status = 'in-review'
+  ORDER BY t.updated_at DESC
+  LIMIT 10;
+" 2>/dev/null)"
+
+if [[ -n "$review_out" ]]; then echo "$review_out"; else echo "  (none)"; fi
+echo ""
+
 # Recent
 echo "Recent:"
 recent_out="$(sqlite3 "$DB" "

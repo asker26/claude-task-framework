@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
+
+task_id="${1:-}"
+work_agent_id="${2:-}"
+
+if [[ -z "$task_id" ]]; then
+  echo "usage: agent-review <task_id> [work_agent_id]" >&2
+  exit 1
+fi
+
+# Load task info
+title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+notes="$(sqlite3 "$DB" "SELECT notes FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+acceptance="$(sqlite3 "$DB" "SELECT acceptance_criteria FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+task_type="$(sqlite3 "$DB" "SELECT type FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+proj_name="$(sqlite3 "$DB" "SELECT p.name FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$task_id;" 2>/dev/null)"
+local_path="$(sqlite3 "$DB" "SELECT p.local_path FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$task_id;" 2>/dev/null)"
+local_path="${local_path/#\~/$HOME}"
+
+if [[ -z "$title" ]]; then
+  echo "task $task_id not found" >&2
+  exit 1
+fi
+
+# Find the worktree (or fall back to project dir)
+worktree_dir="$ROOT/.workspaces/agent-${task_id}"
+branch_name="task-${task_id}"
+
+if [[ -d "$worktree_dir" ]]; then
+  work_dir="$worktree_dir"
+else
+  work_dir="$local_path"
+fi
+
+# Create reviewer agent record
+reviewer_id="$(sqlite3 "$DB" "
+  INSERT INTO agents (task_id, worker_name, status, heartbeat_at, started_at)
+  VALUES ($task_id, 'reviewer', 'running', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+  SELECT last_insert_rowid();
+")"
+
+pane_name="review-${task_id}"
+sqlite3 "$DB" "UPDATE agents SET tmux_pane='$pane_name', pid=$$ WHERE id=$reviewer_id;"
+
+verdict_file="/tmp/ctf-review-${task_id}"
+rm -f "$verdict_file"
+
+# Build review prompt
+if [[ -n "$acceptance" && "$acceptance" != "" ]]; then
+  criteria_block="ACCEPTANCE CRITERIA:
+$acceptance"
+else
+  criteria_block="No explicit acceptance criteria defined. Verify based on the task description:
+- Task: $title
+- Type: $task_type
+- Notes: ${notes:-none}
+
+Determine if the changes actually solve the stated problem. Be skeptical — check real behavior, not just that files were created."
+fi
+
+prompt="You are a REVIEW agent verifying task #${task_id}: ${title}.
+Project: ${proj_name}. Type: ${task_type}.
+
+${criteria_block}
+
+Working directory: ${work_dir}
+Branch: ${branch_name}
+
+YOUR JOB:
+1. Read the git log and diff to understand what was changed
+2. Verify each acceptance criterion is actually met
+3. For web tasks: curl URLs and check that content actually renders (look for real <img> tags, real data, not just 200 status codes)
+4. For code tasks: run tests if available
+5. Write your verdict to ${verdict_file}:
+   - Line 1: exactly PASS or FAIL (nothing else on this line)
+   - Lines 2+: what you checked and the results
+
+RULES:
+- Do NOT modify any code or commit anything
+- Be skeptical — verify actual behavior, not just that files exist
+- 'File was added' is NOT sufficient — verify the file is actually used/rendered
+- If the task involves a live site, curl it and check the HTML
+- A task that adds images must result in actual <img> tags in rendered output"
+
+cd "$work_dir"
+
+echo "=== Review agent #${reviewer_id} for task #${task_id}: ${title} ==="
+echo "=== Checking: ${work_dir} ==="
+echo ""
+
+# Run Claude
+unset CLAUDECODE 2>/dev/null || true
+set +eo pipefail
+claude --dangerously-skip-permissions -p "$prompt" 2>&1 | while IFS= read -r line; do
+  echo "$line"
+  sqlite3 "$DB" "UPDATE agents SET heartbeat_at=CURRENT_TIMESTAMP WHERE id=$reviewer_id;" 2>/dev/null
+done
+exit_code=${PIPESTATUS[0]}
+set -eo pipefail
+
+echo ""
+echo "=== Review agent #${reviewer_id} finished (exit code: $exit_code) ==="
+
+# --- Discord helper ---
+discord_notify() {
+  local msg="$1"
+  local webhook
+  webhook="$(sqlite3 "$DB" "
+    SELECT o.discord_webhook_url
+    FROM tasks t
+    JOIN projects p ON p.id = t.project_id
+    JOIN organizations o ON o.id = p.organization_id
+    WHERE t.id = $task_id;
+  " 2>/dev/null)"
+
+  if [[ -n "$webhook" && "$webhook" != "null" && -f "$ROOT/scripts/discord-notify" ]]; then
+    "$ROOT/scripts/discord-notify" custom --message "$msg" --title "Agent Review" 2>/dev/null || true
+  fi
+}
+
+# --- Read verdict ---
+if [[ ! -f "$verdict_file" ]]; then
+  echo "WARNING: No verdict file — review agent did not write a verdict"
+  sqlite3 "$DB" "
+    UPDATE agents SET status='failed', completed_at=CURRENT_TIMESTAMP,
+           result='no verdict file written' WHERE id=$reviewer_id;
+  "
+  # Leave task in-review; watcher will re-dispatch
+  exit 1
+fi
+
+verdict="$(head -1 "$verdict_file")"
+feedback="$(tail -n +2 "$verdict_file" 2>/dev/null || true)"
+
+if [[ "$verdict" == "PASS" ]]; then
+  # === REVIEW PASSED ===
+  echo "REVIEW PASSED"
+  sqlite3 "$DB" "
+    UPDATE agents SET status='completed', completed_at=CURRENT_TIMESTAMP,
+           result='review passed' WHERE id=$reviewer_id;
+    UPDATE tasks SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=$task_id;
+    INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-review', 'done');
+  "
+
+  title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;")"
+  echo "task #$task_id DONE (verified): $title"
+  discord_notify "Task #$task_id verified and done: $title"
+
+  # --- Dependency cascade ---
+  candidates="$(sqlite3 "$DB" "
+    SELECT id, depends_on FROM tasks
+    WHERE status='todo' AND depends_on IS NOT NULL AND depends_on LIKE '%${task_id}%';
+  " 2>/dev/null)"
+
+  while IFS='|' read -r cand_id cand_deps; do
+    [[ -z "$cand_id" ]] && continue
+
+    dep_ids="$(echo "$cand_deps" | tr -d '[] ' | tr ',' '\n')"
+    all_done=true
+    for dep_id in $dep_ids; do
+      [[ -z "$dep_id" ]] && continue
+      dep_status="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$dep_id;" 2>/dev/null)"
+      if [[ "$dep_status" != "done" ]]; then
+        all_done=false
+        break
+      fi
+    done
+
+    if [[ "$all_done" == "true" ]]; then
+      echo "  cascade: dispatching task #$cand_id (all deps satisfied)"
+      "$ROOT/scripts/agent-dispatch" "$cand_id" 2>/dev/null || true
+    fi
+  done <<< "$candidates"
+
+  # --- Subtask cascade ---
+  parent_id="$(sqlite3 "$DB" "SELECT parent_task_id FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+  if [[ -n "$parent_id" && "$parent_id" != "" ]]; then
+    pending_siblings="$(sqlite3 "$DB" "
+      SELECT COUNT(*) FROM tasks
+      WHERE parent_task_id=$parent_id AND id != $task_id AND status != 'done';
+    " 2>/dev/null)"
+    if [[ "$pending_siblings" -eq 0 ]]; then
+      parent_status="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$parent_id;" 2>/dev/null)"
+      if [[ "$parent_status" == "todo" ]]; then
+        echo "  cascade: all subtasks done, dispatching parent #$parent_id"
+        "$ROOT/scripts/agent-dispatch" "$parent_id" 2>/dev/null || true
+      fi
+    fi
+  fi
+
+else
+  # === REVIEW FAILED ===
+  echo "REVIEW FAILED"
+  safe_feedback="$(echo "$feedback" | sed "s/'/''/g" | head -5)"
+  sqlite3 "$DB" "
+    UPDATE agents SET status='completed', completed_at=CURRENT_TIMESTAMP,
+           result='review failed' WHERE id=$reviewer_id;
+    UPDATE tasks SET status='todo', updated_at=CURRENT_TIMESTAMP,
+           notes=COALESCE(notes,'') || char(10) || '[review] FAILED: ' || '${safe_feedback}' WHERE id=$task_id;
+    INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($task_id, 'in-review', 'todo');
+  "
+
+  title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;")"
+  echo "task #$task_id kicked back to todo: $title"
+  echo "Feedback: $feedback"
+  discord_notify "Task #$task_id review FAILED, kicked back: $title"
+fi
+
+rm -f "$verdict_file"
