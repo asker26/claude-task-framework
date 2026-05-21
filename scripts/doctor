@@ -32,7 +32,7 @@ check "tmux installed" "command -v tmux" optional
 check "tasks.db exists" "test -f '$DB'"
 
 if [[ -f "$DB" ]]; then
-  for table in organizations projects tasks team_members task_status_changes project_memories memory; do
+  for table in organizations projects tasks team_members task_status_changes project_memories memory agent_profiles; do
     check "table: $table" "sqlite3 '$DB' \"SELECT 1 FROM $table LIMIT 0;\""
   done
   # agents table is optional (only in v2+ schemas)

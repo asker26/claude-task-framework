@@ -38,6 +38,16 @@ todo → in-progress (agent-dispatch) → in-review (agent-complete) → done (a
 - Stuck timeout: `CTF_STUCK_TIMEOUT` (default 10 min)
 - Review verdict written to `/tmp/ctf-review-{task_id}` (line 1: PASS/FAIL, line 2+: details)
 
+## Agent Profiles
+```sql
+agent_profiles: id, name, role, system_prompt, tool_grants, auto_assign_types, created_at
+```
+- Named agents: Alex (coder), Maya (researcher), Jordan (devops), Sam (qa), Riley (writer), Casey (seo-expert), Morgan (planner), Taylor (marketing-lead)
+- Tasks get `assigned_agent_id` FK — set manually (`taskctl assign 123 Alex`) or auto-matched by task type
+- `tool_grants`: JSON array of capabilities `["ssh", "gsc", "asc_api", "agent-dispatch"]`
+- Prompt layering: identity (from profile) + task context + project CLAUDE.md (auto-loaded)
+- Seed profiles: `scripts/seed-agents.sh`
+
 ## Task Schema
 ```sql
 tasks: id, title, type, status, priority, project_id, parent_task_id,
