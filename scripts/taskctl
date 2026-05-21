@@ -446,6 +446,28 @@ case "$cmd" in
     " 2>/dev/null)" || true
     if [[ -n "$changes_out" ]]; then echo "$changes_out"; else echo "  (none)"; fi
     ;;
+  agents)
+    sql_read "SELECT id, name, role, COALESCE(auto_assign_types, '-') as auto_types FROM agent_profiles ORDER BY id;"
+    ;;
+
+  assign)
+    assign_task_id="${1:-}"
+    agent_name="${2:-}"
+    if [[ -z "$assign_task_id" || -z "$agent_name" ]]; then
+      echo "usage: taskctl assign <task_id> <agent_name>" >&2
+      exit 1
+    fi
+    agent_name_escaped="$(sql_escape "$agent_name")"
+    assign_profile_id="$(sql_scalar "SELECT id FROM agent_profiles WHERE LOWER(name) = LOWER('${agent_name_escaped}');")"
+    if [[ -z "$assign_profile_id" ]]; then
+      echo "agent '$agent_name' not found. Available:" >&2
+      sql_read "SELECT name, role FROM agent_profiles;" >&2
+      exit 1
+    fi
+    sql_write "UPDATE tasks SET assigned_agent_id = $assign_profile_id, updated_at = CURRENT_TIMESTAMP WHERE id = $assign_task_id;"
+    echo "task #$assign_task_id assigned to $agent_name (profile #$assign_profile_id)"
+    ;;
+
   *)
     cat <<'USAGE'
 usage: taskctl <command>
@@ -467,6 +489,8 @@ commands:
   add-member <name> [opts]           Create team member
   set-status <id> <status>           Update task status
   log <id> <status> [--notes ...]    Status change with audit log
+  agents                             List agent profiles
+  assign <task_id> <agent_name>      Assign task to named agent
 USAGE
     exit 1
     ;;
