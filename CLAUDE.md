@@ -64,6 +64,7 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 
 - tasks.db is gitignored (user data). Schema lives in `init-db.sh`.
 - `.workspaces/` is gitignored (agent worktrees).
+- `docs/plans/` is gitignored — design docs and implementation plans are local-only, never committed.
 - All scripts use `$ROOT` relative to script location, `$DB` from `TASK_DB_PATH` or `$ROOT/tasks.db`.
 - Agent records track: worker_name ('agent' or 'reviewer'), tmux_pane, pid, heartbeat, retry_count.
 - Cascades: when a task completes, dependent tasks and parent tasks auto-dispatch if unblocked.
