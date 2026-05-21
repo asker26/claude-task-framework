@@ -60,6 +60,7 @@ CREATE TABLE tasks (
     due_date TEXT,
     depends_on TEXT,
     acceptance_criteria TEXT,
+    assigned_agent_id INTEGER REFERENCES agent_profiles(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
@@ -125,10 +126,22 @@ CREATE TABLE memory (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Agent profiles: named agents with role-specific prompts
+CREATE TABLE agent_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    tool_grants TEXT,
+    auto_assign_types TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Agents: track autonomous agent runs against tasks
 CREATE TABLE agents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES tasks(id),
+    profile_id INTEGER REFERENCES agent_profiles(id),
     worker_name TEXT NOT NULL DEFAULT 'agent',
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
