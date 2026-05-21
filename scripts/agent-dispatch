@@ -112,10 +112,30 @@ else
   retry_count=0
 fi
 
+# Resolve agent profile
+task_type="$(sqlite3 "$DB" "SELECT type FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+profile_id="$(sqlite3 "$DB" "SELECT assigned_agent_id FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+
+# Auto-match by task type if no explicit assignment
+if [[ -z "$profile_id" || "$profile_id" == "" ]]; then
+  profile_id="$(sqlite3 "$DB" "
+    SELECT id FROM agent_profiles
+    WHERE auto_assign_types LIKE '%\"${task_type}\"%'
+    LIMIT 1;
+  " 2>/dev/null)"
+fi
+
+# Fall back to default coder
+if [[ -z "$profile_id" || "$profile_id" == "" ]]; then
+  profile_id="$(sqlite3 "$DB" "SELECT id FROM agent_profiles WHERE role='coder' LIMIT 1;" 2>/dev/null)"
+fi
+
+profile_name="$(sqlite3 "$DB" "SELECT name FROM agent_profiles WHERE id=${profile_id:-0};" 2>/dev/null)"
+
 # Insert agent record
 agent_id="$(sqlite3 "$DB" "
-  INSERT INTO agents (task_id, status, retry_count, heartbeat_at, started_at, cli_session_id)
-  VALUES ($task_id, 'running', $retry_count, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $(if [[ -n "$prev_session" ]]; then echo "'$prev_session'"; else echo "NULL"; fi));
+  INSERT INTO agents (task_id, profile_id, worker_name, status, retry_count, heartbeat_at, started_at, cli_session_id)
+  VALUES ($task_id, $(if [[ -n "$profile_id" ]]; then echo "$profile_id"; else echo "NULL"; fi), '${profile_name:-agent}', 'running', $retry_count, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $(if [[ -n "$prev_session" ]]; then echo "'$prev_session'"; else echo "NULL"; fi));
   SELECT last_insert_rowid();
 ")"
 
@@ -132,9 +152,9 @@ fi
 
 # Spawn agent in new tmux window
 tmux new-window -t "$TMUX_SESSION" -n "$pane_name" \
-  "$ROOT/scripts/agent-wrapper $task_id $agent_id; sleep 5; exit"
+  "$ROOT/scripts/agent-wrapper $task_id $agent_id ${profile_id:-}; sleep 5; exit"
 
 title="$(sqlite3 "$DB" "SELECT title FROM tasks WHERE id=$task_id;")"
-echo "dispatched agent #$agent_id for task #$task_id: $title"
+echo "dispatched ${profile_name:-agent} #$agent_id for task #$task_id: $title"
 echo "  tmux: $TMUX_SESSION:$pane_name"
 echo "  watch: tmux attach -t $TMUX_SESSION:$pane_name"
