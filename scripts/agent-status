@@ -19,11 +19,12 @@ running_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='runnin
 echo "Running ($running_count/$MAX_AGENTS):"
 
 running_out="$(sqlite3 "$DB" "
-  SELECT printf('  %-12s task #%-4d [%-4s] %-30s %s  heartbeat %ss ago',
+  SELECT printf('  %-12s %-8s task #%-4d [%-4s] %-25s %s  heartbeat %ss ago',
     a.tmux_pane,
+    COALESCE(ap.name, a.worker_name),
     a.task_id,
     UPPER(SUBSTR(t.priority,1,3)),
-    SUBSTR(t.title,1,30),
+    SUBSTR(t.title,1,25),
     CASE
       WHEN (strftime('%s','now') - strftime('%s',a.started_at)) >= 3600
         THEN (strftime('%s','now') - strftime('%s',a.started_at))/3600 || 'h'
@@ -33,6 +34,7 @@ running_out="$(sqlite3 "$DB" "
   )
   FROM agents a
   JOIN tasks t ON t.id = a.task_id
+  LEFT JOIN agent_profiles ap ON ap.id = a.profile_id
   WHERE a.status = 'running'
   ORDER BY a.started_at;
 " 2>/dev/null)"
