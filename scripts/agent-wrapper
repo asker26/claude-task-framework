@@ -6,9 +6,10 @@ DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
 
 task_id="${1:-}"
 agent_id="${2:-}"
+profile_id="${3:-}"
 
 if [[ -z "$task_id" || -z "$agent_id" ]]; then
-  echo "usage: agent-wrapper <task_id> <agent_id>" >&2
+  echo "usage: agent-wrapper <task_id> <agent_id> [profile_id]" >&2
   exit 1
 fi
 
@@ -63,14 +64,61 @@ cd "$worktree_dir"
 # Store PID location
 sqlite3 "$DB" "UPDATE agents SET pid=$$, heartbeat_at=CURRENT_TIMESTAMP WHERE id=$agent_id;"
 
-# Build prompt
-prompt="You are working on task #${task_id}: ${title}.
+# Load agent profile
+identity_prompt=""
+tool_grants=""
+profile_name=""
+if [[ -n "$profile_id" && "$profile_id" != "" ]]; then
+  identity_prompt="$(sqlite3 "$DB" "SELECT system_prompt FROM agent_profiles WHERE id=$profile_id;" 2>/dev/null)"
+  tool_grants="$(sqlite3 "$DB" "SELECT tool_grants FROM agent_profiles WHERE id=$profile_id;" 2>/dev/null)"
+  profile_name="$(sqlite3 "$DB" "SELECT name FROM agent_profiles WHERE id=$profile_id;" 2>/dev/null)"
+fi
+
+# Load acceptance criteria
+acceptance="$(sqlite3 "$DB" "SELECT acceptance_criteria FROM tasks WHERE id=$task_id;" 2>/dev/null)"
+
+# Build layered prompt
+prompt=""
+
+# Layer 1: Identity (from profile)
+if [[ -n "$identity_prompt" ]]; then
+  prompt="${identity_prompt}
+
+"
+else
+  prompt="You are a software engineer working autonomously.
+
+"
+fi
+
+# Layer 2: Task context
+prompt="${prompt}TASK #${task_id}: ${title}
 Type: ${task_type}. Priority: ${priority}.
 Project: ${proj_name}.
 ${notes:+Notes: $notes}
+${acceptance:+
+ACCEPTANCE CRITERIA:
+$acceptance}
 
-Complete this task autonomously. Write code, run tests, and commit your changes when done.
 You are working in a git worktree on branch '${branch_name}'. Commit to this branch."
+
+# Export tool grants as env vars
+if [[ -n "$tool_grants" ]]; then
+  if echo "$tool_grants" | grep -q '"ssh"'; then
+    export CTF_GRANT_SSH=1
+  fi
+  if echo "$tool_grants" | grep -q '"gsc"'; then
+    export CTF_GRANT_GSC=1
+  fi
+  if echo "$tool_grants" | grep -q '"asc_api"'; then
+    export CTF_GRANT_ASC=1
+  fi
+  if echo "$tool_grants" | grep -q '"agent-dispatch"'; then
+    export CTF_GRANT_DISPATCH=1
+    export TASK_DB_PATH="$DB"
+    export CTF_DISPATCH_CMD="$ROOT/scripts/agent-dispatch"
+  fi
+fi
 
 # Check for resume session
 cli_session="$(sqlite3 "$DB" "SELECT cli_session_id FROM agents WHERE id=$agent_id;" 2>/dev/null)"
@@ -84,7 +132,7 @@ if [[ -n "$cli_session" ]]; then
   claude_cmd=(claude --dangerously-skip-permissions --resume "$cli_session" -p "$prompt")
 fi
 
-echo "=== Agent #${agent_id} starting on task #${task_id}: ${title} ==="
+echo "=== ${profile_name:-Agent} #${agent_id} starting on task #${task_id}: ${title} ==="
 echo "=== Worktree: ${worktree_dir} ==="
 echo "=== Branch: ${branch_name} ==="
 echo ""
