@@ -35,6 +35,12 @@ if [[ -z "$task_id" ]]; then
       AND NOT EXISTS (
         SELECT 1 FROM agents a WHERE a.task_id = t.id AND a.status = 'running'
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks dep
+        WHERE dep.status <> 'done'
+          AND (',' || REPLACE(REPLACE(REPLACE(t.depends_on, '[', ''), ']', ''), ' ', '') || ',')
+              LIKE '%,' || dep.id || ',%'
+      )
     ORDER BY
       (CASE t.priority WHEN 'high' THEN 30 WHEN 'medium' THEN 20 ELSE 10 END
        + (SELECT COUNT(*) FROM tasks d
