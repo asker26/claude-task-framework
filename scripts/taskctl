@@ -450,6 +450,159 @@ case "$cmd" in
     sql_read "SELECT id, name, role, COALESCE(auto_assign_types, '-') as auto_types FROM agent_profiles ORDER BY id;"
     ;;
 
+  merge)
+    merge_task_id="${1:-}"
+    if [[ -z "$merge_task_id" ]]; then
+      echo "usage: taskctl merge <task_id>" >&2
+      exit 1
+    fi
+    if [[ ! "$merge_task_id" =~ ^[0-9]+$ ]]; then
+      echo "task id must be numeric" >&2
+      exit 1
+    fi
+    merge_status="$(sql_scalar "SELECT status FROM tasks WHERE id=$merge_task_id;")"
+    if [[ -z "$merge_status" ]]; then
+      echo "task $merge_task_id not found" >&2
+      exit 1
+    fi
+    if [[ "$merge_status" != "approved" ]]; then
+      echo "task $merge_task_id is '$merge_status', not 'approved'" >&2
+      exit 1
+    fi
+    merge_path="$(sql_scalar "SELECT p.local_path FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$merge_task_id;")"
+    merge_path="${merge_path/#\~/$HOME}"
+    if [[ -z "$merge_path" || ! -d "$merge_path" ]]; then
+      echo "project path not found for task $merge_task_id" >&2
+      exit 1
+    fi
+    merge_branch="task-${merge_task_id}"
+    merge_title="$(sql_scalar "SELECT title FROM tasks WHERE id=$merge_task_id;")"
+
+    # Remove worktree if it exists (so branch is not locked)
+    worktree_dir="$ROOT/.workspaces/agent-${merge_task_id}"
+    if [[ -d "$worktree_dir" ]]; then
+      git -C "$merge_path" worktree remove "$worktree_dir" --force 2>/dev/null || true
+    fi
+
+    # Merge
+    echo "merging $merge_branch into main in $(basename "$merge_path")..."
+    git -C "$merge_path" checkout main 2>/dev/null
+    git -C "$merge_path" pull --ff-only 2>/dev/null || true
+    if ! git -C "$merge_path" merge "$merge_branch" --no-ff -m "merge: task #${merge_task_id} — ${merge_title}" 2>&1; then
+      echo "MERGE CONFLICT — resolve manually in $merge_path, then run: taskctl merge-done $merge_task_id" >&2
+      exit 1
+    fi
+    git -C "$merge_path" push 2>/dev/null
+
+    # Mark done
+    sql_write "
+      UPDATE tasks SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=$merge_task_id;
+      INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($merge_task_id, 'approved', 'done');
+    "
+
+    # Clean up branch
+    git -C "$merge_path" branch -d "$merge_branch" 2>/dev/null || true
+    git -C "$merge_path" push origin --delete "$merge_branch" 2>/dev/null || true
+
+    echo "task #$merge_task_id merged and done: $merge_title"
+
+    # --- Dependency cascade ---
+    cascade_candidates="$(sql_raw "
+      SELECT id, depends_on FROM tasks
+      WHERE status='todo' AND depends_on IS NOT NULL AND depends_on LIKE '%${merge_task_id}%';
+    " 2>/dev/null)" || true
+
+    while IFS='|' read -r cand_id cand_deps; do
+      [[ -z "$cand_id" ]] && continue
+      dep_ids="$(echo "$cand_deps" | tr -d '[] ' | tr ',' '\n')"
+      all_done=true
+      for dep_id in $dep_ids; do
+        [[ -z "$dep_id" ]] && continue
+        dep_status="$(sql_scalar "SELECT status FROM tasks WHERE id=$dep_id;")"
+        if [[ "$dep_status" != "done" ]]; then
+          all_done=false
+          break
+        fi
+      done
+      if [[ "$all_done" == "true" ]]; then
+        echo "  cascade: unblocked task #$cand_id"
+        "$ROOT/scripts/agent-dispatch" "$cand_id" 2>/dev/null || true
+      fi
+    done <<< "$cascade_candidates"
+
+    # --- Subtask cascade ---
+    cascade_parent="$(sql_scalar "SELECT parent_task_id FROM tasks WHERE id=$merge_task_id;" 2>/dev/null)" || true
+    if [[ -n "$cascade_parent" && "$cascade_parent" != "" ]]; then
+      pending="$(sql_scalar "
+        SELECT COUNT(*) FROM tasks
+        WHERE parent_task_id=$cascade_parent AND id != $merge_task_id AND status != 'done';
+      ")"
+      if [[ "$pending" -eq 0 ]]; then
+        parent_st="$(sql_scalar "SELECT status FROM tasks WHERE id=$cascade_parent;")"
+        if [[ "$parent_st" == "todo" ]]; then
+          echo "  cascade: all subtasks done, dispatching parent #$cascade_parent"
+          "$ROOT/scripts/agent-dispatch" "$cascade_parent" 2>/dev/null || true
+        fi
+      fi
+    fi
+    ;;
+
+  merge-all)
+    approved_tasks="$(sql_raw "
+      SELECT t.id, t.title, p.name FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.status='approved'
+      ORDER BY p.name, t.id;
+    " 2>/dev/null)" || true
+
+    if [[ -z "$approved_tasks" ]]; then
+      echo "no approved tasks to merge"
+      exit 0
+    fi
+
+    count=0
+    failed=0
+    while IFS='|' read -r tid ttitle pname; do
+      [[ -z "$tid" ]] && continue
+      echo ""
+      echo "--- task #$tid: $ttitle ($pname) ---"
+      if "$0" merge "$tid"; then
+        count=$((count + 1))
+      else
+        failed=$((failed + 1))
+        echo "STOPPED: fix conflict in $pname, then re-run merge-all"
+        break
+      fi
+    done <<< "$approved_tasks"
+
+    echo ""
+    echo "merged: $count, failed: $failed"
+    ;;
+
+  merge-done)
+    # Manual completion after resolving a merge conflict
+    md_task_id="${1:-}"
+    if [[ -z "$md_task_id" ]]; then
+      echo "usage: taskctl merge-done <task_id>" >&2
+      echo "Use after manually resolving a merge conflict." >&2
+      exit 1
+    fi
+    md_status="$(sql_scalar "SELECT status FROM tasks WHERE id=$md_task_id;")"
+    if [[ "$md_status" != "approved" ]]; then
+      echo "task $md_task_id is '$md_status', not 'approved'" >&2
+      exit 1
+    fi
+    sql_write "
+      UPDATE tasks SET status='done', updated_at=CURRENT_TIMESTAMP WHERE id=$md_task_id;
+      INSERT INTO task_status_changes (task_id, from_status, to_status) VALUES ($md_task_id, 'approved', 'done');
+    "
+    merge_branch="task-${md_task_id}"
+    merge_path="$(sql_scalar "SELECT p.local_path FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$md_task_id;")"
+    merge_path="${merge_path/#\~/$HOME}"
+    git -C "$merge_path" branch -d "$merge_branch" 2>/dev/null || true
+    echo "task #$md_task_id marked done (post-conflict merge)"
+    ;;
+
   assign)
     assign_task_id="${1:-}"
     agent_name="${2:-}"
@@ -491,6 +644,9 @@ commands:
   log <id> <status> [--notes ...]    Status change with audit log
   agents                             List agent profiles
   assign <task_id> <agent_name>      Assign task to named agent
+  merge <task_id>                    Merge approved task branch to main
+  merge-all                          Merge all approved tasks
+  merge-done <task_id>               Mark done after manual conflict resolution
 USAGE
     exit 1
     ;;

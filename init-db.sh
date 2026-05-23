@@ -52,7 +52,7 @@ CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'feature' CHECK(type IN ('feature', 'bug', 'research', 'video', 'release', 'other')),
-    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in-progress', 'in-review', 'testing', 'done', 'paused')),
+    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in-progress', 'in-review', 'approved', 'testing', 'done', 'paused')),
     priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high', 'medium', 'low')),
     project_id INTEGER,
     parent_task_id INTEGER,

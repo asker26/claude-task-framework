@@ -89,6 +89,31 @@ review_out="$(sqlite3 "$DB" "
 if [[ -n "$review_out" ]]; then echo "$review_out"; else echo "  (none)"; fi
 echo ""
 
+# Approved (awaiting merge)
+echo "Approved (awaiting merge):"
+approved_out="$(sqlite3 "$DB" "
+  SELECT printf('  #%-4d %-30s %-15s %s ago',
+    t.id,
+    SUBSTR(t.title,1,30),
+    COALESCE(p.name, '-'),
+    CASE
+      WHEN (strftime('%s','now') - strftime('%s',t.updated_at)) >= 86400
+        THEN (strftime('%s','now') - strftime('%s',t.updated_at))/86400 || 'd'
+      WHEN (strftime('%s','now') - strftime('%s',t.updated_at)) >= 3600
+        THEN (strftime('%s','now') - strftime('%s',t.updated_at))/3600 || 'h'
+      ELSE (strftime('%s','now') - strftime('%s',t.updated_at))/60 || 'm'
+    END
+  )
+  FROM tasks t
+  LEFT JOIN projects p ON p.id = t.project_id
+  WHERE t.status = 'approved'
+  ORDER BY p.name, t.id
+  LIMIT 20;
+" 2>/dev/null)"
+
+if [[ -n "$approved_out" ]]; then echo "$approved_out"; else echo "  (none)"; fi
+echo ""
+
 # Recent
 echo "Recent:"
 recent_out="$(sqlite3 "$DB" "
