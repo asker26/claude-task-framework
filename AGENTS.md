@@ -11,7 +11,6 @@ This repo is a task management and automation framework for Claude Code.
 ## Non-destructive rule
 Do not remove, rename, or break:
 - `hooks/session-start.sh`
-- `hooks/intent-classifier.sh`
 - `hooks/stop-guard.sh`
 - `tasks.db`
 

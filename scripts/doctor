@@ -43,7 +43,7 @@ for script in taskctl current-focus project-context discord-notify jira-task; do
   check "scripts/$script executable" "test -x '$ROOT/scripts/$script'"
 done
 
-for hook in session-start.sh intent-classifier.sh stop-guard.sh; do
+for hook in session-start.sh stop-guard.sh; do
   check "hooks/$hook executable" "test -x '$ROOT/hooks/$hook'"
 done
 

@@ -175,8 +175,8 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 
 - **DB**: `tasks.db` (SQLite) — tables: organizations, projects, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory
 - **Scripts**: `scripts/` — agent system, taskctl CLI, integrations (Discord, Jira, GSC)
-- **Hooks**: `hooks/` — session-start (focus injection), intent-classifier (workflow chaining), stop-guard (anti-premature-exit)
-- **Skills**: `skills/` — mega-skills (/feature, /bugfix, /refactor), utilities (/opib, /list-prs, /summ)
+- **Hooks**: `hooks/` — session-start (focus injection), stop-guard (anti-premature-exit)
+- **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`), plus team-lead, docs-lookup, isolate-workspace, appstoreconnect, and the ASO suite. The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills).
 - **Templates**: `templates/` — Discord embed templates (pr_review, jira_status, seo_monitor)
 - **Workflows**: `scripts/workflows/` — blog-image-gen, gsc-audit
 
@@ -204,6 +204,15 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 - Cascades: when a task completes review, dependent tasks and parent tasks auto-dispatch if unblocked.
 - Discord notifications fire on completion/failure if the org has a webhook configured.
 
+## Superpowers workflow skills
+
+The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills by [@obra](https://github.com/obra), installed globally in `~/.claude/skills/`. They are NOT part of this repo and NOT symlinked from `skills/`. They replace the removed `/feature` and `/bugfix` mega-skills (originals kept under `skills-backup/`).
+
+From [github.com/obra/superpowers](https://github.com/obra/superpowers): `brainstorming`, `writing-plans`, `executing-plans`, `test-driven-development`, `systematic-debugging`, `verification-before-completion`, `requesting-code-review`, `receiving-code-review`, `finishing-a-development-branch`.
+From [github.com/obra/the-elements-of-style](https://github.com/obra/the-elements-of-style): `writing-clearly-and-concisely`.
+
+See [README → Superpowers workflow skills](README.md#superpowers-workflow-skills) for the install command and per-skill source links.
+
 ## Development Rules
 
 - Keep scripts as bash — no Node/Python dependencies for core agent system.
@@ -211,3 +220,4 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 - Agent prompts should include acceptance criteria and be skeptical — "verify actual behavior, not just that files exist."
 - Test agent changes by dispatching against a real task: `scripts/agent-dispatch <task_id>`
 - **Prefer delegation**: if a task is in the DB with acceptance criteria, dispatch it to an agent. Only do work directly when it's faster than creating a task (trivial changes, urgent fixes, or interactive exploration).
+- **Minimize debug round-trips**: when diagnosing, batch your probes. Gather multiple signals per cycle (logs + DB state + a reproducible script that traces each step) instead of testing one variable at a time. Prefer a single self-contained reproduction over repeated incremental requests.

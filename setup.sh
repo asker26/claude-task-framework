@@ -96,7 +96,7 @@ fi
 # --- Step 6: Install Skills ---
 echo "Skill Installation"
 echo "------------------"
-echo "  1) Core (9 skills: feature, bugfix, refactor, opib, list-prs, summ, team-lead, docs-lookup, isolate-workspace)"
+echo "  1) Core (7 skills: refactor, opib, list-prs, summ, team-lead, docs-lookup, isolate-workspace)"
 echo "  2) All (core + 17 ASO skills + appstoreconnect)"
 echo "  3) None"
 read -rp "Which skills to install? [1]: " skill_choice
@@ -104,10 +104,10 @@ skill_choice="${skill_choice:-1}"
 
 if [[ "$skill_choice" == "1" || "$skill_choice" == "2" ]]; then
   mkdir -p "$HOME/.claude/skills"
-  for skill in feature bugfix refactor opib list-prs summ team-lead docs-lookup isolate-workspace; do
+  for skill in refactor opib list-prs summ team-lead docs-lookup isolate-workspace; do
     cp -r "$ROOT/skills/$skill" "$HOME/.claude/skills/"
   done
-  echo "Installed 9 core skills."
+  echo "Installed 7 core skills."
 
   if [[ "$skill_choice" == "2" ]]; then
     cp -r "$ROOT/skills/appstoreconnect" "$HOME/.claude/skills/"
@@ -117,6 +117,33 @@ if [[ "$skill_choice" == "1" || "$skill_choice" == "2" ]]; then
     done
     echo "Installed 18 additional skills (ASO + App Store Connect)."
   fi
+  echo ""
+fi
+
+# --- Step 6b: Install superpowers workflow skills (external, from GitHub) ---
+echo ""
+echo "Superpowers Workflow Skills (external)"
+echo "--------------------------------------"
+read -rp "Install the superpowers dev-workflow skills from GitHub? [y/N]: " sp_choice
+if [[ "${sp_choice:-N}" =~ ^[Yy]$ ]]; then
+  sp_tmp="$(mktemp -d)"
+  if git clone --depth 1 https://github.com/obra/superpowers.git "$sp_tmp/sp" 2>/dev/null; then
+    for s in brainstorming writing-plans executing-plans test-driven-development \
+             systematic-debugging verification-before-completion \
+             requesting-code-review receiving-code-review finishing-a-development-branch; do
+      cp -r "$sp_tmp/sp/skills/$s" "$HOME/.claude/skills/" 2>/dev/null
+    done
+    echo "Installed 9 superpowers skills."
+  else
+    echo "WARN: could not clone obra/superpowers — skipped."
+  fi
+  if git clone --depth 1 https://github.com/obra/the-elements-of-style.git "$sp_tmp/eos" 2>/dev/null; then
+    cp -r "$sp_tmp/eos/skills/writing-clearly-and-concisely" "$HOME/.claude/skills/" 2>/dev/null
+    echo "Installed writing-clearly-and-concisely."
+  else
+    echo "WARN: could not clone obra/the-elements-of-style — skipped."
+  fi
+  rm -rf "$sp_tmp"
   echo ""
 fi
 

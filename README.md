@@ -6,7 +6,6 @@ A task management and autonomous execution framework for [Claude Code](https://d
 
 - **Task tracking** — SQLite database for projects, tasks, organizations, and team members. Claude queries it to understand what you're working on and stay on-scope.
 - **Focus guard** — Session-start hook injects your current priority and active tasks. If you drift off-topic, Claude flags it.
-- **Autonomous execution** — Intent-classifier hook detects what you're trying to do (feature, bugfix, refactor, deploy, review) and chains the full workflow automatically.
 - **Stop guard** — Prevents Claude from stopping mid-chain. If it tries to exit before finishing, the hook sends it back to complete the remaining steps.
 - **Integrations** — Scripts for Discord notifications (via webhooks) and Jira operations (via `acli` CLI).
 - **Multi-agent execution** — Dispatch multiple Claude Code sessions in parallel via tmux. Priority scheduling, heartbeat monitoring, stuck recovery, dependency cascading, and git worktree isolation.
@@ -69,7 +68,41 @@ Copy the included skills to your global Claude skills directory:
 cp -r skills/* ~/.claude/skills/
 ```
 
-This gives you `/feature`, `/bugfix`, `/refactor`, `/opib`, `/list-prs`, and `/summ` as slash commands in Claude Code.
+This gives you `/refactor`, `/opib`, `/list-prs`, `/summ`, `/team-lead`, `/docs-lookup`, and `/isolate` as slash commands in Claude Code.
+
+The interactive development workflow uses the external **superpowers** skills (see below) instead of the old `/feature` and `/bugfix` mega-skills.
+
+## Superpowers workflow skills
+
+The dev workflow (brainstorm → plan → execute → review) uses the **superpowers** skill set by [@obra](https://github.com/obra). These are external skills installed globally in `~/.claude/skills/` — they are **not** part of this repo and **not** symlinked from `skills/`. They replace the removed `/feature` and `/bugfix` mega-skills (whose originals are kept under `skills-backup/`).
+
+| Skill | GitHub source |
+|-------|---------------|
+| `brainstorming` | [obra/superpowers · skills/brainstorming](https://github.com/obra/superpowers/tree/main/skills/brainstorming) |
+| `writing-plans` | [obra/superpowers · skills/writing-plans](https://github.com/obra/superpowers/tree/main/skills/writing-plans) |
+| `executing-plans` | [obra/superpowers · skills/executing-plans](https://github.com/obra/superpowers/tree/main/skills/executing-plans) |
+| `test-driven-development` | [obra/superpowers · skills/test-driven-development](https://github.com/obra/superpowers/tree/main/skills/test-driven-development) |
+| `systematic-debugging` | [obra/superpowers · skills/systematic-debugging](https://github.com/obra/superpowers/tree/main/skills/systematic-debugging) |
+| `verification-before-completion` | [obra/superpowers · skills/verification-before-completion](https://github.com/obra/superpowers/tree/main/skills/verification-before-completion) |
+| `requesting-code-review` | [obra/superpowers · skills/requesting-code-review](https://github.com/obra/superpowers/tree/main/skills/requesting-code-review) |
+| `receiving-code-review` | [obra/superpowers · skills/receiving-code-review](https://github.com/obra/superpowers/tree/main/skills/receiving-code-review) |
+| `finishing-a-development-branch` | [obra/superpowers · skills/finishing-a-development-branch](https://github.com/obra/superpowers/tree/main/skills/finishing-a-development-branch) |
+| `writing-clearly-and-concisely` | [obra/the-elements-of-style · skills/writing-clearly-and-concisely](https://github.com/obra/the-elements-of-style/tree/main/skills/writing-clearly-and-concisely) |
+
+Install / update:
+
+```bash
+tmp=$(mktemp -d)
+git clone --depth 1 https://github.com/obra/superpowers.git "$tmp/sp"
+for s in brainstorming writing-plans executing-plans test-driven-development \
+         systematic-debugging verification-before-completion \
+         requesting-code-review receiving-code-review finishing-a-development-branch; do
+  cp -r "$tmp/sp/skills/$s" ~/.claude/skills/
+done
+git clone --depth 1 https://github.com/obra/the-elements-of-style.git "$tmp/eos"
+cp -r "$tmp/eos/skills/writing-clearly-and-concisely" ~/.claude/skills/
+rm -rf "$tmp"
+```
 
 ## Project Structure
 
@@ -84,7 +117,6 @@ claude-task-framework/
 ├── AGENTS.md                  # Instructions for AI agents working in this repo
 ├── hooks/
 │   ├── session-start.sh       # Injects focus context at session start
-│   ├── intent-classifier.sh   # Detects intent, chains autonomous execution
 │   └── stop-guard.sh          # Prevents premature exit mid-chain
 ├── scripts/
 │   ├── taskctl                # CLI for querying + managing tasks.db
@@ -101,8 +133,6 @@ claude-task-framework/
 │   ├── discord-notify         # Sends Discord webhook notifications
 │   └── jira-task              # Jira operations via acli CLI
 ├── skills/
-│   ├── feature/SKILL.md       # Autonomous feature implementation
-│   ├── bugfix/SKILL.md        # Autonomous bugfix
 │   ├── refactor/SKILL.md      # Autonomous refactor
 │   ├── opib/SKILL.md          # Open anything in browser (/opib)
 │   ├── list-prs/SKILL.md      # List open PRs in a table (/list-prs)
@@ -253,11 +283,6 @@ scripts/jira-task search "status = 'In Progress'"
 
 ### Session Start
 When you open a Claude Code session, `session-start.sh` queries `tasks.db` for your high-priority in-progress tasks and injects them as context. Claude knows what you should be working on.
-
-### Intent Classifier
-When you type a prompt, `intent-classifier.sh` classifies it as one of: feature, bugfix, refactor, devops, review, ops, or none. For actionable intents, it injects a directive telling Claude to execute the full chain autonomously (explore -> implement -> test -> commit -> push -> PR).
-
-Research questions, conversational follow-ups, and short prompts are excluded — the hook only fires for action-oriented requests.
 
 ### Stop Guard
 If Claude tries to stop mid-chain (e.g., after implementing but before committing), `stop-guard.sh` blocks the exit and sends Claude back to finish. Safety limits: max 2 blocks per chain, 5-minute timeout.

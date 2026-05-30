@@ -57,11 +57,12 @@ See [permissions.md](permissions.md) for what each rule does and why.
 Skills go in `~/.claude/skills/{skill-name}/SKILL.md`. The full skill set is documented in [skills.md](skills.md).
 
 **Essential skills to install first:**
-1. **feature** — autonomous end-to-end feature implementation
-2. **bugfix** — autonomous bug diagnosis and fix
-3. **refactor** — autonomous refactor with safe batching
+1. **refactor** — autonomous refactor with safe batching (in this repo's `skills/`)
+2. The **superpowers** workflow chain — brainstorming → writing-plans → executing-plans, plus test-driven-development, systematic-debugging, code-review, and verification gates (external; from GitHub)
 
-These are included in the `skills/` directory of this repo. Copy them to `~/.claude/skills/`.
+The `refactor` skill is included in the `skills/` directory of this repo — copy it to `~/.claude/skills/`. The superpowers skills are external: install them from [github.com/obra/superpowers](https://github.com/obra/superpowers) and [github.com/obra/the-elements-of-style](https://github.com/obra/the-elements-of-style) (see [skills.md](skills.md#core-workflow-superpowers) for the per-skill list and the install snippet in the [README](../README.md#superpowers-workflow-skills)).
+
+> The previous `feature` and `bugfix` mega-skills were removed in favor of the superpowers chain; their originals are kept under `skills-backup/`.
 
 ## Step 3: Project CLAUDE.md
 

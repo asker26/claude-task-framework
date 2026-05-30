@@ -11,17 +11,6 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "__FRAMEWORK_PATH__/hooks/intent-classifier.sh"
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "matcher": "",
