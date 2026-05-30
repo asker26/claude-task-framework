@@ -6,7 +6,6 @@ A task management and autonomous execution framework for [Claude Code](https://d
 
 - **Task tracking** — SQLite database for projects, tasks, organizations, and team members. Claude queries it to understand what you're working on and stay on-scope.
 - **Focus guard** — Session-start hook injects your current priority and active tasks. If you drift off-topic, Claude flags it.
-- **Stop guard** — Prevents Claude from stopping mid-chain. If it tries to exit before finishing, the hook sends it back to complete the remaining steps.
 - **Integrations** — Scripts for Discord notifications (via webhooks) and Jira operations (via `acli` CLI).
 - **Multi-agent execution** — Dispatch multiple Claude Code sessions in parallel via tmux. Priority scheduling, heartbeat monitoring, stuck recovery, dependency cascading, and git worktree isolation.
 
@@ -116,8 +115,7 @@ claude-task-framework/
 ├── CLAUDE.md.example          # Template for your ~/CLAUDE.md
 ├── AGENTS.md                  # Instructions for AI agents working in this repo
 ├── hooks/
-│   ├── session-start.sh       # Injects focus context at session start
-│   └── stop-guard.sh          # Prevents premature exit mid-chain
+│   └── session-start.sh       # Injects focus context at session start
 ├── scripts/
 │   ├── taskctl                # CLI for querying + managing tasks.db
 │   ├── doctor                 # Health check (deps, DB, hooks, permissions)
@@ -283,9 +281,6 @@ scripts/jira-task search "status = 'In Progress'"
 
 ### Session Start
 When you open a Claude Code session, `session-start.sh` queries `tasks.db` for your high-priority in-progress tasks and injects them as context. Claude knows what you should be working on.
-
-### Stop Guard
-If Claude tries to stop mid-chain (e.g., after implementing but before committing), `stop-guard.sh` blocks the exit and sends Claude back to finish. Safety limits: max 2 blocks per chain, 5-minute timeout.
 
 ## Niche Skills
 
