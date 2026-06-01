@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# agent-clean — GC stale agent cruft: worktrees, registrations, tmux windows,
+# agent rows. Safe by design: only touches cruft tied to a DONE (terminal) task.
+# Isolation clones are reported, never removed. Pass --dry-run to classify only.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+WORKSPACES="${CTF_WORKSPACES_DIR:-$ROOT/.workspaces}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
+
+DRY_RUN=0
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+
+G="\033[32m"; D="\033[2m"; X="\033[0m"
+log() { printf "%b\n" "$1"; }
+
+removed_count=0; reclaimed_kb=0; pruned_count=0; tmux_killed=0; db_reset=0
+attention=()   # "task_id|branch|status|why"
+isolation=()   # "path|size|gitsummary"
+owner_list=""  # newline-separated owning repo roots, deduped at prune time
+
+default_branch() {
+  local repo="$1" d
+  d="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [[ -z "$d" ]]; then
+    if   git -C "$repo" show-ref --verify --quiet refs/heads/main   2>/dev/null; then d="main"
+    elif git -C "$repo" show-ref --verify --quiet refs/heads/master 2>/dev/null; then d="master"
+    else d="main"; fi
+  fi
+  printf '%s' "$d"
+}
+
+# owning project repo for a worktree: DB join first, git fallback for orphans
+resolve_owner() {
+  local wt="$1" tid="$2" lp="" gc
+  if [[ -n "$tid" ]]; then
+    lp="$(sqlite3 "$DB" "SELECT p.local_path FROM projects p JOIN tasks t ON t.project_id=p.id WHERE t.id=$tid;" 2>/dev/null || true)"
+    lp="${lp/#\~/$HOME}"
+  fi
+  if [[ -z "$lp" || ! -d "$lp" ]]; then
+    gc="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [[ -n "$gc" ]] && lp="$(dirname "$gc")"
+  fi
+  printf '%s' "$lp"
+}
+
+# real uncommitted work? (ignores vendor/, node_modules/, .phpunit.cache)
+has_real_changes() {
+  local rest
+  rest="$(git -C "$1" status --porcelain 2>/dev/null | sed 's/^...//' \
+          | grep -vE '^(vendor/|node_modules/|\.phpunit\.cache)' || true)"
+  [[ -n "$rest" ]]
+}
+
+# dir bind-mounted into a running container?
+is_docker_mounted() {
+  local wt="$1" cid
+  command -v docker >/dev/null 2>&1 || return 1
+  for cid in $(docker ps -q 2>/dev/null); do
+    if docker inspect "$cid" --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' 2>/dev/null | grep -qF "$wt"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+remove_worktree() {
+  local wt="$1" owner="$2"
+  if [[ -n "$owner" && -d "$owner" ]]; then
+    git -C "$owner" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
+    owner_list="$owner_list
+$owner"
+  else
+    rm -rf "$wt"
+  fi
+}
+
+process_agent_worktree() {
+  local wt="$1" tid="$2" status owner branch merged why kb
+  status="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$tid;" 2>/dev/null || true)"
+  branch="task-$tid"
+  owner="$(resolve_owner "$wt" "$tid")"
+
+  # never touch a worktree tied to a non-terminal task
+  if [[ -n "$status" && "$status" != "done" ]]; then
+    attention+=("$tid|$branch|$status|active task — left untouched")
+    return
+  fi
+
+  merged=0
+  if [[ "$status" == "done" ]]; then
+    merged=1
+  elif [[ -n "$owner" && -d "$owner" ]]; then
+    git -C "$wt" merge-base --is-ancestor HEAD "$(default_branch "$owner")" 2>/dev/null && merged=1
+  fi
+
+  if [[ "$merged" -eq 1 ]] && ! has_real_changes "$wt" && ! is_docker_mounted "$wt"; then
+    kb="$(du -sk "$wt" 2>/dev/null | cut -f1 || echo 0)"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      log "${D}would remove${X} $wt (task $tid ${status:-orphan}, ${kb}KB)"
+    else
+      remove_worktree "$wt" "$owner"
+      log "${G}removed${X} $wt (${kb}KB)"
+    fi
+    removed_count=$((removed_count + 1)); reclaimed_kb=$((reclaimed_kb + kb))
+  else
+    why=""
+    [[ "$merged" -eq 0 ]] && why="un-merged"
+    has_real_changes "$wt"  && why="${why:+$why, }uncommitted work"
+    is_docker_mounted "$wt" && why="${why:+$why, }docker-mounted"
+    attention+=("$tid|$branch|${status:-no-task}|$why")
+  fi
+}
+
+record_isolation() {
+  local top="$1" g clone size gs
+  while IFS= read -r g; do
+    clone="$(dirname "$g")"
+    size="$(du -sh "$clone" 2>/dev/null | cut -f1 || echo '?')"
+    gs="$(git -C "$clone" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+    isolation+=("$clone|$size|${gs} changed files")
+  done < <(find "$top" -maxdepth 4 -name .git 2>/dev/null)
+}
+
+# --- 1. worktrees ----------------------------------------------------------
+if [[ -d "$WORKSPACES" ]]; then
+  for entry in "$WORKSPACES"/*; do
+    [[ -d "$entry" ]] || continue
+    base="$(basename "$entry")"
+    if [[ "$base" =~ ^agent-([0-9]+)$ ]]; then
+      process_agent_worktree "$entry" "${BASH_REMATCH[1]}"
+    else
+      record_isolation "$entry"
+    fi
+  done
+fi
+
+# --- 2. prune orphaned registrations (each owning repo + CTF root) ---------
+while IFS= read -r repo; do
+  [[ -z "$repo" || ! -d "$repo" ]] && continue
+  n="$(git -C "$repo" worktree list --porcelain 2>/dev/null | grep -c '^prunable ' || true)"
+  pruned_count=$((pruned_count + n))
+  [[ "$DRY_RUN" -eq 0 ]] && git -C "$repo" worktree prune 2>/dev/null || true
+done < <(printf '%s\n%s\n' "$ROOT" "$owner_list" | sort -u)
+
+# --- 3. tmux windows -------------------------------------------------------
+if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+  while IFS= read -r win; do
+    [[ "$win" =~ ^agent-([0-9]+)$ ]] || continue
+    tid="${BASH_REMATCH[1]}"
+    tstatus="$(sqlite3 "$DB" "SELECT status FROM tasks WHERE id=$tid;" 2>/dev/null || true)"
+    pid="$(sqlite3 "$DB" "SELECT pid FROM agents WHERE task_id=$tid AND status='running' ORDER BY id DESC LIMIT 1;" 2>/dev/null || true)"
+    alive=0
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && alive=1
+    if [[ "$alive" -eq 0 && "$tstatus" == "done" ]]; then
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        log "${D}would kill tmux${X} $TMUX_SESSION:$win"
+      else
+        tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true
+      fi
+      tmux_killed=$((tmux_killed + 1))
+    fi
+  done < <(tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null || true)
+fi
+
+# --- 4. orphaned DB rows ---------------------------------------------------
+while IFS='|' read -r aid pid tid; do
+  [[ -z "$aid" ]] && continue
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then continue; fi
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    log "${D}would reset agent${X} #$aid (task $tid) running->cancelled"
+  else
+    sqlite3 "$DB" "UPDATE agents SET status='cancelled', completed_at=CURRENT_TIMESTAMP WHERE id=$aid;"
+  fi
+  db_reset=$((db_reset + 1))
+done < <(sqlite3 -separator '|' "$DB" "SELECT a.id, COALESCE(a.pid,''), a.task_id FROM agents a JOIN tasks t ON t.id=a.task_id WHERE a.status='running' AND t.status='done';" 2>/dev/null || true)
+
+# --- summary ---------------------------------------------------------------
+label=""; [[ "$DRY_RUN" -eq 1 ]] && label=" (dry-run)"
+echo ""
+echo "===== ctf-clean summary${label} ====="
+reclaimed_gb="$(awk -v k="$reclaimed_kb" 'BEGIN{printf "%.2f", k/1048576}')"
+printf "worktrees removed:    %d (%s GB reclaimed)\n" "$removed_count" "$reclaimed_gb"
+echo   "registrations pruned: $pruned_count"
+echo   "tmux windows killed:  $tmux_killed"
+echo   "agent rows reset:     $db_reset"
+if [[ "${#attention[@]}" -gt 0 ]]; then
+  echo ""; echo "----- ATTENTION: un-merged / active worktrees (NOT removed) -----"
+  for a in "${attention[@]}"; do IFS='|' read -r t b s w <<<"$a"; printf "ATTENTION\t%s\t%s\t%s\t%s\n" "$t" "$b" "$s" "$w"; done
+fi
+if [[ "${#isolation[@]}" -gt 0 ]]; then
+  echo ""; echo "----- ISOLATION clones (report only, never removed) -----"
+  for i in "${isolation[@]}"; do IFS='|' read -r p z g <<<"$i"; printf "ISOLATION\t%s\t%s\t%s\n" "$p" "$z" "$g"; done
+fi

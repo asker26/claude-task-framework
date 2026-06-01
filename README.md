@@ -67,7 +67,7 @@ Copy the included skills to your global Claude skills directory:
 cp -r skills/* ~/.claude/skills/
 ```
 
-This gives you `/refactor`, `/opib`, `/list-prs`, `/summ`, `/team-lead`, `/docs-lookup`, and `/isolate` as slash commands in Claude Code.
+This gives you `/refactor`, `/opib`, `/list-prs`, `/summ`, `/team-lead`, `/docs-lookup`, `/isolate`, and `/ctf-clean` (agent-workspace janitor) as slash commands in Claude Code.
 
 The interactive development workflow uses the external **superpowers** skills (see below) instead of the old `/feature` and `/bugfix` mega-skills.
 

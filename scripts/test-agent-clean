@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Integration test for scripts/agent-clean. Builds a throwaway git fixture,
+# runs the sweeper in --dry-run (must be inert) then for real (must clean only
+# the provably-safe worktree), and asserts on disk + DB state.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLEAN="$ROOT/scripts/agent-clean"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+fail=0
+ok()   { printf "  [ok] %s\n" "$1"; }
+bad()  { printf "  [FAIL] %s\n" "$1"; fail=1; }
+chk()  { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+
+# --- build a throwaway project repo --------------------------------------
+PROJ="$TMP/proj"; mkdir -p "$PROJ"
+git -C "$PROJ" init -q
+git -C "$PROJ" config user.email t@t.t; git -C "$PROJ" config user.name t
+echo base > "$PROJ/file.txt"; git -C "$PROJ" add .; git -C "$PROJ" commit -qm base
+git -C "$PROJ" branch -M main
+
+WS="$TMP/ws"; mkdir -p "$WS"
+# agent-100: task done, clean   -> MUST be removed
+git -C "$PROJ" worktree add -q "$WS/agent-100" -b task-100
+# agent-101: task in-progress   -> MUST be left (active)
+git -C "$PROJ" worktree add -q "$WS/agent-101" -b task-101
+# agent-102: task done, but dirty -> MUST be left (uncommitted work)
+git -C "$PROJ" worktree add -q "$WS/agent-102" -b task-102
+echo dirty > "$WS/agent-102/file.txt"
+# orphan registration: dir removed out from under git -> MUST be pruned
+git -C "$PROJ" worktree add -q "$WS/agent-200" -b task-200
+rm -rf "$WS/agent-200"
+# isolation clone: nested, not agent-<id> -> REPORT only, never touched
+mkdir -p "$WS/myorg/proj/abc123"; git -C "$WS/myorg/proj/abc123" init -q
+
+# --- seed throwaway DB ----------------------------------------------------
+DB="$TMP/test.db"
+sqlite3 "$DB" "CREATE TABLE projects (id INTEGER PRIMARY KEY, local_path TEXT);"
+sqlite3 "$DB" "CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT, project_id INTEGER);"
+sqlite3 "$DB" "CREATE TABLE agents (id INTEGER PRIMARY KEY, task_id INTEGER, status TEXT, pid INTEGER, completed_at TIMESTAMP);"
+sqlite3 "$DB" "INSERT INTO projects (id, local_path) VALUES (1, '$PROJ');"
+sqlite3 "$DB" "INSERT INTO tasks (id, status, project_id) VALUES (100,'done',1),(101,'in-progress',1),(102,'done',1);"
+# stale running agent row for the DONE task 100 with a dead pid -> reset to cancelled
+sqlite3 "$DB" "INSERT INTO agents (id, task_id, status, pid) VALUES (1,100,'running',999999);"
+
+run() { env TASK_DB_PATH="$DB" CTF_WORKSPACES_DIR="$WS" CTF_TMUX_SESSION="ctf-test-none-$$" "$CLEAN" "$@"; }
+
+# --- 1. dry-run must be inert --------------------------------------------
+echo "== dry-run =="
+out="$(run --dry-run)"
+chk "dry-run: agent-100 still present"      "test -d '$WS/agent-100'"
+chk "dry-run: agents row still 'running'"   "[[ \$(sqlite3 '$DB' \"SELECT status FROM agents WHERE id=1;\") == running ]]"
+chk "dry-run: reports it would remove 100"  "grep -q 'agent-100' <<<\"\$out\""
+chk "dry-run: flags ATTENTION"              "grep -q '^ATTENTION' <<<\"\$out\""
+chk "dry-run: flags ISOLATION"              "grep -q '^ISOLATION' <<<\"\$out\""
+
+# --- 2. real run cleans only the safe items ------------------------------
+echo "== real run =="
+out="$(run)"
+chk "removed agent-100"                      "test ! -d '$WS/agent-100'"
+chk "kept active agent-101"                  "test -d '$WS/agent-101'"
+chk "kept dirty done agent-102"              "test -d '$WS/agent-102'"
+chk "kept isolation clone"                   "test -d '$WS/myorg/proj/abc123'"
+chk "reset stale agents row to cancelled"    "[[ \$(sqlite3 '$DB' \"SELECT status FROM agents WHERE id=1;\") == cancelled ]]"
+chk "ATTENTION lists task 101"               "grep -qE '^ATTENTION\\s+101\\b' <<<\"\$out\""
+chk "ATTENTION lists task 102"               "grep -qE '^ATTENTION\\s+102\\b' <<<\"\$out\""
+chk "ISOLATION lists the clone"              "grep -q 'abc123' <<<\"\$out\""
+chk "pruned >=1 orphan registration"         "grep -qE 'registrations pruned: [1-9]' <<<\"\$out\""
+
+echo ""
+if [[ "$fail" -eq 0 ]]; then echo "ALL PASS"; else echo "FAILURES"; exit 1; fi
