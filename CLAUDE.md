@@ -176,7 +176,7 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 - **DB**: `tasks.db` (SQLite) — tables: organizations, projects, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory
 - **Scripts**: `scripts/` — agent system, taskctl CLI, integrations (Discord, Jira, GSC)
 - **Hooks**: `hooks/` — session-start (focus injection)
-- **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`), plus team-lead, docs-lookup, isolate-workspace, appstoreconnect, and the ASO suite. The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills).
+- **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`), plus team-lead, docs-lookup, isolate-workspace, appstoreconnect, and the ASO suite. The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
 - **Templates**: `templates/` — Discord embed templates (pr_review, jira_status, seo_monitor)
 - **Workflows**: `scripts/workflows/` — blog-image-gen, gsc-audit
 

@@ -103,6 +103,18 @@ cp -r "$tmp/eos/skills/writing-clearly-and-concisely" ~/.claude/skills/
 rm -rf "$tmp"
 ```
 
+## /tirf — readable formatter (global)
+
+`/tirf` reshapes a bloated, hard-to-read blob of AI output into a tight,
+scannable markdown view — **without losing any facts**. It is not a summarizer
+(`/summ` condenses; `/tirf` reorganizes losslessly).
+
+It is a **global** skill living in `~/.claude/skills/tirf/`, like the superpowers
+skills above — not part of this repo's `skills/`. It composes with
+`writing-clearly-and-concisely` for the word-level polish.
+
+Usage: `/tirf <file | task-id | text>` (no argument → it asks what to format).
+
 ## Project Structure
 
 ```
