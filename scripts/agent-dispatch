@@ -23,6 +23,23 @@ if [[ "$running" -ge "$MAX_AGENTS" ]]; then
   exit 0
 fi
 
+# Optional sprint scoping for auto-pick: CTF_SPRINT may be a sprint id or name.
+# When set, only tasks in that sprint are eligible for auto-pick.
+sprint_filter=""
+if [[ -n "${CTF_SPRINT:-}" ]]; then
+  if [[ "$CTF_SPRINT" =~ ^[0-9]+$ ]]; then
+    ctf_sprint_id="$CTF_SPRINT"
+  else
+    ctf_sprint_esc="$(printf "%s" "$CTF_SPRINT" | sed "s/'/''/g")"
+    ctf_sprint_id="$(sqlite3 "$DB" "SELECT id FROM sprints WHERE name='${ctf_sprint_esc}' ORDER BY id DESC LIMIT 1;" 2>/dev/null)"
+  fi
+  if [[ -n "$ctf_sprint_id" ]]; then
+    sprint_filter="AND t.sprint_id = ${ctf_sprint_id}"
+  else
+    echo "CTF_SPRINT='$CTF_SPRINT' not found; ignoring sprint filter" >&2
+  fi
+fi
+
 # Determine which task to dispatch
 task_id="${1:-}"
 
@@ -32,6 +49,7 @@ if [[ -z "$task_id" ]]; then
     FROM tasks t
     WHERE t.status = 'todo'
       AND t.project_id IS NOT NULL
+      ${sprint_filter}
       AND NOT EXISTS (
         SELECT 1 FROM agents a WHERE a.task_id = t.id AND a.status = 'running'
       )
@@ -46,6 +64,9 @@ if [[ -z "$task_id" ]]; then
        + (SELECT COUNT(*) FROM tasks d
           WHERE d.depends_on LIKE '%' || t.id || '%'
             AND d.status = 'todo') * 10
+       + (CASE WHEN EXISTS (
+            SELECT 1 FROM sprints s WHERE s.id = t.sprint_id AND s.status = 'active'
+          ) THEN 25 ELSE 0 END)
       ) DESC,
       t.created_at ASC
     LIMIT 1;

@@ -13,6 +13,10 @@ echo "Project from cwd:"
 "$TASKCTL" project-from-cwd "$TARGET_CWD"
 echo
 
+echo "Sprints:"
+"$TASKCTL" sprints
+echo
+
 echo "Top focus tasks:"
 "$TASKCTL" focus
 echo

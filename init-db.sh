@@ -47,6 +47,27 @@ BEGIN
     UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
 
+-- Sprints: time-boxed buckets of tasks (optionally scoped to a project)
+CREATE TABLE sprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    project_id INTEGER REFERENCES projects(id),
+    goal TEXT,
+    status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'active', 'completed', 'cancelled')),
+    start_date TEXT,
+    end_date TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX idx_sprints_project_status ON sprints(project_id, status);
+
+CREATE TRIGGER update_sprints_timestamp AFTER UPDATE ON sprints
+BEGIN
+    UPDATE sprints SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+END;
+
 -- Tasks: the core work items
 CREATE TABLE tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,11 +82,15 @@ CREATE TABLE tasks (
     depends_on TEXT,
     acceptance_criteria TEXT,
     assigned_agent_id INTEGER REFERENCES agent_profiles(id),
+    sprint_id INTEGER REFERENCES sprints(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
-    FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
+    FOREIGN KEY (parent_task_id) REFERENCES tasks(id),
+    FOREIGN KEY (sprint_id) REFERENCES sprints(id)
 );
+
+CREATE INDEX idx_tasks_sprint_id ON tasks(sprint_id);
 
 -- Team members: map GitHub/Discord/Jira identities
 CREATE TABLE team_members (

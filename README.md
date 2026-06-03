@@ -180,7 +180,8 @@ The `tasks.db` database has these tables:
 |-------|---------|
 | `organizations` | Teams/companies with Jira and Discord integration config |
 | `projects` | Registered codebases with local paths and org membership |
-| `tasks` | Work items with type, status, priority, and subtask support |
+| `sprints` | Time-boxed buckets of tasks (optionally scoped to a project) |
+| `tasks` | Work items with type, status, priority, subtask, and sprint support |
 | `team_members` | People with GitHub, Discord, and Jira identity mapping |
 | `task_status_changes` | Audit log of status transitions |
 | `project_memories` | Persistent context per project (architecture notes, gotchas) |
@@ -216,6 +217,24 @@ scripts/taskctl add-member "Alice" --org "My Team" --github alice-dev
 scripts/taskctl log 1 in-progress --notes "Started working on it"
 scripts/taskctl dashboard
 ```
+
+### Sprints
+
+Time-boxed buckets of tasks. Tasks in the **active** sprint get a priority bonus in the
+auto-dispatch queue (and surface in the dashboard, `agent-status`, and the session-start hook).
+
+```bash
+scripts/taskctl add-sprint "Sprint 1" --project "my-app" --goal "ship MVP" --end 2026-06-20
+scripts/taskctl add-task "Build login" --project "my-app" --priority high --sprint "Sprint 1"
+scripts/taskctl sprint-add "Sprint 1" 42 43 44   # move existing tasks into the sprint
+scripts/taskctl sprint-activate "Sprint 1"        # one active sprint per project
+scripts/taskctl sprints                           # list sprints with done/total progress
+scripts/taskctl sprint "Sprint 1"                 # sprint detail + its tasks
+scripts/taskctl backlog "my-app"                  # non-done tasks not in any sprint
+```
+
+Existing databases gain sprints via `scripts/migrate-v4-sprints.sh` (idempotent); new DBs get
+them from `init-db.sh`. Restrict auto-dispatch to one sprint with `CTF_SPRINT=<id|name>`.
 
 ### doctor
 

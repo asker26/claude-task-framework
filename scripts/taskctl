@@ -53,6 +53,18 @@ resolve_project_id() {
   sql_scalar "SELECT id FROM projects WHERE name = '${proj_escaped}' LIMIT 1;"
 }
 
+# Resolve a sprint by numeric id or by name (most recent match wins).
+resolve_sprint_id() {
+  local sprint_ref="$1"
+  if [[ "$sprint_ref" =~ ^[0-9]+$ ]]; then
+    sql_scalar "SELECT id FROM sprints WHERE id = ${sprint_ref} LIMIT 1;"
+  else
+    local s_escaped
+    s_escaped="$(sql_escape "$sprint_ref")"
+    sql_scalar "SELECT id FROM sprints WHERE name = '${s_escaped}' ORDER BY id DESC LIMIT 1;"
+  fi
+}
+
 task_query() {
   local project_name="$1"
   local open_only="${2:-0}"
@@ -292,7 +304,7 @@ case "$cmd" in
       exit 1
     fi
     shift
-    proj_name="" task_type="feature" task_priority="medium" parent_id="" due_date="" notes="" depends_on=""
+    proj_name="" task_type="feature" task_priority="medium" parent_id="" due_date="" notes="" depends_on="" sprint_ref=""
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --project) proj_name="${2:-}"; shift 2 ;;
@@ -302,6 +314,7 @@ case "$cmd" in
         --due) due_date="${2:-}"; shift 2 ;;
         --notes) notes="${2:-}"; shift 2 ;;
         --depends-on) depends_on="${2:-}"; shift 2 ;;
+        --sprint) sprint_ref="${2:-}"; shift 2 ;;
         *) echo "unknown arg: $1" >&2; exit 1 ;;
       esac
     done
@@ -313,11 +326,19 @@ case "$cmd" in
         exit 1
       fi
     fi
+    sprint_id=""
+    if [[ -n "$sprint_ref" ]]; then
+      sprint_id="$(resolve_sprint_id "$sprint_ref")"
+      if [[ -z "$sprint_id" ]]; then
+        echo "sprint not found: $sprint_ref" >&2
+        exit 1
+      fi
+    fi
     new_id=$(sql_insert "
-      INSERT INTO tasks (title, type, priority, project_id, parent_task_id, due_date, notes, depends_on)
-      VALUES ('$(sql_escape "$task_title")', '$(sql_escape "$task_type")', '$(sql_escape "$task_priority")', $(if [[ -n "$proj_id" ]]; then echo "$proj_id"; else echo "NULL"; fi), $(if [[ -n "$parent_id" ]]; then echo "$parent_id"; else echo "NULL"; fi), $(if [[ -n "$due_date" ]]; then echo "'$(sql_escape "$due_date")'"; else echo "NULL"; fi), $(if [[ -n "$notes" ]]; then echo "'$(sql_escape "$notes")'"; else echo "NULL"; fi), $(if [[ -n "$depends_on" ]]; then echo "'$(sql_escape "$depends_on")'"; else echo "NULL"; fi));
+      INSERT INTO tasks (title, type, priority, project_id, parent_task_id, due_date, notes, depends_on, sprint_id)
+      VALUES ('$(sql_escape "$task_title")', '$(sql_escape "$task_type")', '$(sql_escape "$task_priority")', $(if [[ -n "$proj_id" ]]; then echo "$proj_id"; else echo "NULL"; fi), $(if [[ -n "$parent_id" ]]; then echo "$parent_id"; else echo "NULL"; fi), $(if [[ -n "$due_date" ]]; then echo "'$(sql_escape "$due_date")'"; else echo "NULL"; fi), $(if [[ -n "$notes" ]]; then echo "'$(sql_escape "$notes")'"; else echo "NULL"; fi), $(if [[ -n "$depends_on" ]]; then echo "'$(sql_escape "$depends_on")'"; else echo "NULL"; fi), $(if [[ -n "$sprint_id" ]]; then echo "$sprint_id"; else echo "NULL"; fi));
     ")
-    echo "created task: $task_title (id $new_id)"
+    echo "created task: $task_title (id $new_id)$(if [[ -n "$sprint_id" ]]; then echo " in sprint #$sprint_id"; fi)"
     ;;
   add-member)
     member_name="${1:-}"
@@ -403,6 +424,20 @@ case "$cmd" in
       IFS='|' read -r d_proj d_org <<< "$proj_row"
       echo "Org: $d_org | Project: $d_proj (from cwd)"
     fi
+    echo ""
+    echo "Active sprint(s):"
+    sprint_out="$(sql_raw "
+      SELECT printf('  #%-3d %-28s %-12s %-10s [%d/%d done]', s.id, s.name, COALESCE(p.name,'-'),
+             COALESCE(s.end_date,''),
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id=s.id AND t.status='done'),
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id=s.id))
+      FROM sprints s
+      LEFT JOIN projects p ON p.id = s.project_id
+      WHERE s.status='active'
+      ORDER BY s.id DESC
+      LIMIT 5;
+    " 2>/dev/null)" || true
+    if [[ -n "$sprint_out" ]]; then echo "$sprint_out"; else echo "  (none)"; fi
     echo ""
     echo "Active:"
     active_out="$(sql_raw "
@@ -621,6 +656,180 @@ case "$cmd" in
     echo "task #$assign_task_id assigned to $agent_name (profile #$assign_profile_id)"
     ;;
 
+  add-sprint)
+    sprint_name="${1:-}"
+    if [[ -z "$sprint_name" ]]; then
+      echo "usage: taskctl add-sprint <name> [--project <name>] [--goal <text>] [--start <date>] [--end <date>] [--status <planned|active|completed|cancelled>]" >&2
+      exit 1
+    fi
+    shift
+    sp_proj="" sp_goal="" sp_start="" sp_end="" sp_status="planned"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --project) sp_proj="${2:-}"; shift 2 ;;
+        --goal) sp_goal="${2:-}"; shift 2 ;;
+        --start) sp_start="${2:-}"; shift 2 ;;
+        --end) sp_end="${2:-}"; shift 2 ;;
+        --status) sp_status="${2:-}"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+      esac
+    done
+    sp_proj_id=""
+    if [[ -n "$sp_proj" ]]; then
+      sp_proj_id="$(resolve_project_id "$sp_proj")"
+      if [[ -z "$sp_proj_id" ]]; then
+        echo "project not found: $sp_proj" >&2
+        exit 1
+      fi
+    fi
+    new_id=$(sql_insert "
+      INSERT INTO sprints (name, project_id, goal, status, start_date, end_date)
+      VALUES ('$(sql_escape "$sprint_name")', $(if [[ -n "$sp_proj_id" ]]; then echo "$sp_proj_id"; else echo "NULL"; fi), $(if [[ -n "$sp_goal" ]]; then echo "'$(sql_escape "$sp_goal")'"; else echo "NULL"; fi), '$(sql_escape "$sp_status")', $(if [[ -n "$sp_start" ]]; then echo "'$(sql_escape "$sp_start")'"; else echo "NULL"; fi), $(if [[ -n "$sp_end" ]]; then echo "'$(sql_escape "$sp_end")'"; else echo "NULL"; fi));
+    ")
+    echo "created sprint: $sprint_name (id $new_id)"
+    ;;
+
+  sprints)
+    proj_filter="${1:-}"
+    sprints_where=""
+    if [[ -n "$proj_filter" ]]; then
+      pf_id="$(resolve_project_id "$proj_filter")"
+      if [[ -z "$pf_id" ]]; then echo "project not found: $proj_filter" >&2; exit 1; fi
+      sprints_where="WHERE s.project_id = $pf_id"
+    fi
+    sql_read "
+      SELECT s.id,
+             s.name,
+             s.status,
+             COALESCE(p.name, '-') AS project,
+             COALESCE(s.end_date, '') AS ends,
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.status = 'done') || '/' ||
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id) AS done
+      FROM sprints s
+      LEFT JOIN projects p ON p.id = s.project_id
+      ${sprints_where}
+      ORDER BY CASE s.status WHEN 'active' THEN 1 WHEN 'planned' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END,
+               s.id DESC;
+    "
+    ;;
+
+  sprint)
+    sprint_ref="${1:-}"
+    if [[ -z "$sprint_ref" ]]; then
+      echo "usage: taskctl sprint <id|name>" >&2
+      exit 1
+    fi
+    sid="$(resolve_sprint_id "$sprint_ref")"
+    if [[ -z "$sid" ]]; then echo "sprint not found: $sprint_ref" >&2; exit 1; fi
+    sql_read "
+      SELECT s.id,
+             s.name,
+             s.status,
+             COALESCE(p.name, '-') AS project,
+             COALESCE(s.goal, '') AS goal,
+             COALESCE(s.start_date, '') AS start,
+             COALESCE(s.end_date, '') AS ends,
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.status = 'done') || '/' ||
+             (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id) AS done
+      FROM sprints s
+      LEFT JOIN projects p ON p.id = s.project_id
+      WHERE s.id = $sid;
+    "
+    echo ""
+    echo "Tasks:"
+    sql_read "
+      SELECT t.id,
+             t.title,
+             t.status,
+             t.priority,
+             COALESCE(p.name, '-') AS project
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE t.sprint_id = $sid
+      ORDER BY CASE t.status
+                 WHEN 'in-progress' THEN 1 WHEN 'todo' THEN 2 WHEN 'in-review' THEN 3
+                 WHEN 'approved' THEN 4 WHEN 'testing' THEN 5 WHEN 'paused' THEN 6
+                 WHEN 'done' THEN 7 ELSE 8 END,
+               CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END;
+    "
+    ;;
+
+  sprint-activate)
+    sprint_ref="${1:-}"
+    if [[ -z "$sprint_ref" ]]; then echo "usage: taskctl sprint-activate <id|name>" >&2; exit 1; fi
+    sid="$(resolve_sprint_id "$sprint_ref")"
+    if [[ -z "$sid" ]]; then echo "sprint not found: $sprint_ref" >&2; exit 1; fi
+    # One active sprint per project: demote sibling active sprints (NULL-project sprints share a bucket).
+    sql_write "
+      UPDATE sprints SET status='planned', updated_at=CURRENT_TIMESTAMP
+      WHERE status='active' AND id != $sid
+        AND ( (project_id IS NULL AND (SELECT project_id FROM sprints WHERE id=$sid) IS NULL)
+              OR project_id = (SELECT project_id FROM sprints WHERE id=$sid) );
+      UPDATE sprints SET status='active', updated_at=CURRENT_TIMESTAMP WHERE id=$sid;
+    "
+    echo "sprint #$sid activated (one active per project)"
+    ;;
+
+  sprint-status)
+    sprint_ref="${1:-}"
+    new_sp_status="${2:-}"
+    if [[ -z "$sprint_ref" || -z "$new_sp_status" ]]; then
+      echo "usage: taskctl sprint-status <id|name> <planned|active|completed|cancelled>" >&2
+      echo "       (to enforce one-active-per-project, prefer: taskctl sprint-activate <id|name>)" >&2
+      exit 1
+    fi
+    sid="$(resolve_sprint_id "$sprint_ref")"
+    if [[ -z "$sid" ]]; then echo "sprint not found: $sprint_ref" >&2; exit 1; fi
+    sql_write "UPDATE sprints SET status='$(sql_escape "$new_sp_status")', updated_at=CURRENT_TIMESTAMP WHERE id=$sid;"
+    echo "sprint #$sid -> $new_sp_status"
+    ;;
+
+  sprint-add)
+    sprint_ref="${1:-}"
+    if [[ -z "$sprint_ref" ]]; then echo "usage: taskctl sprint-add <sprint_id|name> <task_id> [task_id...]" >&2; exit 1; fi
+    shift
+    sid="$(resolve_sprint_id "$sprint_ref")"
+    if [[ -z "$sid" ]]; then echo "sprint not found: $sprint_ref" >&2; exit 1; fi
+    if [[ $# -eq 0 ]]; then echo "no task ids given" >&2; exit 1; fi
+    for tid in "$@"; do
+      if [[ ! "$tid" =~ ^[0-9]+$ ]]; then echo "task id must be numeric: $tid" >&2; exit 1; fi
+      sql_write "UPDATE tasks SET sprint_id=$sid, updated_at=CURRENT_TIMESTAMP WHERE id=$tid;"
+      echo "task #$tid -> sprint #$sid"
+    done
+    ;;
+
+  sprint-remove)
+    if [[ $# -eq 0 ]]; then echo "usage: taskctl sprint-remove <task_id> [task_id...]" >&2; exit 1; fi
+    for tid in "$@"; do
+      if [[ ! "$tid" =~ ^[0-9]+$ ]]; then echo "task id must be numeric: $tid" >&2; exit 1; fi
+      sql_write "UPDATE tasks SET sprint_id=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=$tid;"
+      echo "task #$tid removed from its sprint"
+    done
+    ;;
+
+  backlog)
+    proj_filter="${1:-}"
+    backlog_where="WHERE t.sprint_id IS NULL AND t.status != 'done'"
+    if [[ -n "$proj_filter" ]]; then
+      pf_id="$(resolve_project_id "$proj_filter")"
+      if [[ -z "$pf_id" ]]; then echo "project not found: $proj_filter" >&2; exit 1; fi
+      backlog_where="${backlog_where} AND t.project_id = $pf_id"
+    fi
+    sql_read "
+      SELECT t.id,
+             t.title,
+             t.status,
+             t.priority,
+             COALESCE(p.name, '-') AS project
+      FROM tasks t
+      LEFT JOIN projects p ON p.id = t.project_id
+      ${backlog_where}
+      ORDER BY CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+               t.created_at ASC
+      LIMIT 50;
+    "
+    ;;
+
   *)
     cat <<'USAGE'
 usage: taskctl <command>
@@ -638,7 +847,7 @@ commands:
   tasks-open <project>               Non-done tasks for a project
   add-org <name> [opts]              Create organization
   add-project <name> [opts]          Create project
-  add-task <title> [opts]            Create task (--depends-on "[1,2]")
+  add-task <title> [opts]            Create task (--depends-on "[1,2]", --sprint <id|name>)
   add-member <name> [opts]           Create team member
   set-status <id> <status>           Update task status
   log <id> <status> [--notes ...]    Status change with audit log
@@ -647,6 +856,16 @@ commands:
   merge <task_id>                    Merge approved task branch to main
   merge-all                          Merge all approved tasks
   merge-done <task_id>               Mark done after manual conflict resolution
+
+sprints:
+  add-sprint <name> [opts]           Create sprint (--project --goal --start --end --status)
+  sprints [project]                  List sprints with done/total progress
+  sprint <id|name>                   Sprint detail + its tasks
+  sprint-activate <id|name>          Mark active (demotes other active sprints in the project)
+  sprint-status <id|name> <status>   Set sprint status (planned|active|completed|cancelled)
+  sprint-add <id|name> <task_id...>  Add task(s) to a sprint
+  sprint-remove <task_id...>         Clear a task's sprint
+  backlog [project]                  Non-done tasks not in any sprint
 USAGE
     exit 1
     ;;

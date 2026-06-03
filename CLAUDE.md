@@ -84,14 +84,17 @@ todo --> in-progress (agent-dispatch) --> in-review (agent-complete)
 When auto-picking tasks, `agent-dispatch` scores them by:
 - Priority weight: high=30, medium=20, low=10
 - Dependency bonus: +10 per `todo` task that depends on this one (unblocks more work)
+- Active-sprint bonus: +25 if the task is in a sprint whose status is `active`
 - Tiebreaker: oldest `created_at` first
 - Tasks with unmet `depends_on` are skipped
+- Set `CTF_SPRINT=<id|name>` to restrict auto-pick to a single sprint's tasks
 
 ### Concurrency and environment
 | Setting | Env var | Default |
 |---|---|---|
 | Max concurrent agents | `CTF_MAX_AGENTS` | 3 |
 | Tmux session name | `CTF_TMUX_SESSION` | `ctf-agents` |
+| Restrict auto-pick to one sprint | `CTF_SPRINT` | (unset) |
 | Stuck timeout (minutes) | `CTF_STUCK_TIMEOUT` | 10 |
 | Database path | `TASK_DB_PATH` | `$ROOT/tasks.db` |
 
@@ -148,8 +151,19 @@ scripts/taskctl projects
 scripts/taskctl add-project myapp --path ~/Projects/myapp --org myorg --repo https://github.com/user/myapp
 scripts/taskctl add-org myorg --jira-instance https://x.atlassian.net --jira-key PROJ --discord-webhook https://...
 
+# Sprints
+scripts/taskctl add-sprint "Sprint 1" --project myapp --goal "ship MVP" --end 2026-06-20
+scripts/taskctl add-task "Title" --project myapp --sprint "Sprint 1"   # or --sprint <id>
+scripts/taskctl sprint-add "Sprint 1" 42 43    # move existing tasks into a sprint
+scripts/taskctl sprint-activate "Sprint 1"     # one active sprint per project (demotes siblings)
+scripts/taskctl sprints [project]              # list sprints + done/total progress
+scripts/taskctl sprint "Sprint 1"              # sprint detail + its tasks
+scripts/taskctl sprint-status 1 completed      # set status (planned|active|completed|cancelled)
+scripts/taskctl sprint-remove 42               # clear a task's sprint
+scripts/taskctl backlog [project]              # non-done tasks not in any sprint
+
 # Views
-scripts/taskctl dashboard              # full focus dashboard
+scripts/taskctl dashboard              # full focus dashboard (incl. active sprint section)
 scripts/taskctl active                 # in-progress/testing tasks
 scripts/taskctl focus                  # top priority tasks
 
@@ -162,18 +176,21 @@ scripts/taskctl assign 42 Maya         # assign task to agent
 ```sql
 tasks: id, title, type, status, priority, project_id, parent_task_id,
        notes, due_date, depends_on, acceptance_criteria, assigned_agent_id,
+       sprint_id, created_at, updated_at
+sprints: id, name, project_id, goal, status, start_date, end_date,
        created_at, updated_at
 ```
-- **status**: `todo`, `in-progress`, `in-review`, `testing`, `done`, `paused`
+- **status**: `todo`, `in-progress`, `in-review`, `approved`, `testing`, `done`, `paused`
 - **type**: `feature`, `bug`, `research`, `video`, `release`, `other`
 - **priority**: `high`, `medium`, `low`
 - **acceptance_criteria**: concrete, testable criteria the review agent checks — always set these
 - **depends_on**: JSON array of task IDs (e.g., `[1,2]`) that must be `done` before dispatch
 - **parent_task_id**: subtask hierarchy. When all subtasks are `done`, parent auto-dispatches.
+- **sprint_id**: optional FK to `sprints`. Tasks in the `active` sprint get a +25 dispatch bonus. `sprints.status`: `planned`, `active`, `completed`, `cancelled` (one `active` per project — enforced by `sprint-activate`).
 
 ## Architecture
 
-- **DB**: `tasks.db` (SQLite) — tables: organizations, projects, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory
+- **DB**: `tasks.db` (SQLite) — tables: organizations, projects, sprints, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory
 - **Scripts**: `scripts/` — agent system, taskctl CLI, integrations (Discord, Jira, GSC)
 - **Hooks**: `hooks/` — session-start (focus injection)
 - **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`), plus team-lead, docs-lookup, isolate-workspace, ctf-clean (`/ctf-clean` workspace janitor), appstoreconnect, and the ASO suite. The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
@@ -190,8 +207,9 @@ tasks: id, title, type, status, priority, project_id, parent_task_id,
 | `agent-review` | Spawns reviewer Claude session, checks acceptance criteria, writes PASS/FAIL verdict |
 | `agent-watcher` | Detects stuck agents, kills orphans, re-dispatches orphaned reviews |
 | `agent-status` | Dashboard: running agents, queue, in-review, recent completions, daemon status |
-| `taskctl` | CLI for task/project/org CRUD and views |
+| `taskctl` | CLI for task/project/org/sprint CRUD and views |
 | `doctor` | Health check: verifies deps, DB tables, script permissions, hook config |
+| `migrate-v4-sprints.sh` | Idempotent migration: adds the `sprints` table + `tasks.sprint_id` to an existing DB |
 | `agent-clean` | Janitor: safely removes stale `done`-task worktrees, prunes orphaned registrations, kills dead tmux windows, resets orphaned agent rows (`--dry-run` to preview) |
 | `seed-agents.sh` | Seeds the 8 agent profiles (INSERT OR IGNORE) |
 

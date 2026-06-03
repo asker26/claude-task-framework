@@ -48,6 +48,21 @@ if [[ "$ACTIVE_TASKS_JSON" == "[]" && -f "$DB" ]]; then
   " 2>/dev/null || echo '[]')
 fi
 
+# --- 2b. Active sprint(s) ---
+ACTIVE_SPRINTS=""
+if [[ -f "$DB" ]]; then
+  ACTIVE_SPRINTS=$(sqlite3 "$DB" "
+    SELECT s.name || ' [' ||
+      (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.status = 'done') || '/' ||
+      (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id) || ' done' ||
+      CASE WHEN COALESCE(s.end_date,'') != '' THEN ', ends ' || s.end_date ELSE '' END || ']'
+    FROM sprints s
+    WHERE s.status = 'active'
+    ORDER BY s.id DESC
+    LIMIT 3;
+  " 2>/dev/null || echo "")
+fi
+
 # --- 3. Match CWD to a known project via shared script (fallback to direct SQL) ---
 PROJECT_JSON=""
 if [[ -x "$PROJECT_CONTEXT" ]]; then
@@ -81,6 +96,14 @@ CONTEXT="FOCUS CONTEXT (injected by session-start hook):"
 
 if [[ -n "$PRIORITY" ]]; then
   CONTEXT="$CONTEXT\nCurrent priority: $PRIORITY"
+fi
+
+if [[ -n "$ACTIVE_SPRINTS" ]]; then
+  CONTEXT="$CONTEXT\nActive sprint(s):"
+  while IFS= read -r sline; do
+    [[ -n "$sline" ]] || continue
+    CONTEXT="$CONTEXT\n  - $sline"
+  done <<< "$ACTIVE_SPRINTS"
 fi
 
 if [[ -n "$ACTIVE_TASKS_JSON" && "$ACTIVE_TASKS_JSON" != '[]' ]]; then

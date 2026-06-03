@@ -14,6 +14,22 @@ fi
 echo "AGENT STATUS"
 echo "============"
 
+# Active sprints
+active_sprints="$(sqlite3 "$DB" "
+  SELECT printf('  #%-3d %-26s %-12s [%d/%d done]', s.id, SUBSTR(s.name,1,26), COALESCE(p.name,'-'),
+    (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id=s.id AND t.status='done'),
+    (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id=s.id))
+  FROM sprints s
+  LEFT JOIN projects p ON p.id = s.project_id
+  WHERE s.status='active'
+  ORDER BY s.id DESC LIMIT 5;
+" 2>/dev/null)"
+if [[ -n "$active_sprints" ]]; then
+  echo "Active sprint(s):"
+  echo "$active_sprints"
+  echo ""
+fi
+
 # Running agents
 running_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM agents WHERE status='running';")"
 echo "Running ($running_count/$MAX_AGENTS):"
@@ -42,7 +58,7 @@ running_out="$(sqlite3 "$DB" "
 if [[ -n "$running_out" ]]; then echo "$running_out"; else echo "  (none)"; fi
 echo ""
 
-# Queue
+# Queue  (score mirrors agent-dispatch: priority + dependency unblock + active-sprint bonus)
 echo "Queue:"
 queue_out="$(sqlite3 "$DB" "
   SELECT printf('  #%-4d [%-4s] %-30s (score: %d)',
@@ -52,6 +68,7 @@ queue_out="$(sqlite3 "$DB" "
     CASE t.priority WHEN 'high' THEN 30 WHEN 'medium' THEN 20 ELSE 10 END
       + (SELECT COUNT(*) FROM tasks d
          WHERE d.depends_on LIKE '%' || t.id || '%' AND d.status='todo') * 10
+      + (CASE WHEN EXISTS (SELECT 1 FROM sprints s WHERE s.id=t.sprint_id AND s.status='active') THEN 25 ELSE 0 END)
   )
   FROM tasks t
   WHERE t.status = 'todo'
@@ -60,6 +77,7 @@ queue_out="$(sqlite3 "$DB" "
     (CASE t.priority WHEN 'high' THEN 30 WHEN 'medium' THEN 20 ELSE 10 END
      + (SELECT COUNT(*) FROM tasks d
         WHERE d.depends_on LIKE '%' || t.id || '%' AND d.status='todo') * 10
+     + (CASE WHEN EXISTS (SELECT 1 FROM sprints s WHERE s.id=t.sprint_id AND s.status='active') THEN 25 ELSE 0 END)
     ) DESC,
     t.created_at ASC
   LIMIT 10;
