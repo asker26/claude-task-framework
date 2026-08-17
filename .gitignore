@@ -9,3 +9,5 @@ backups/
 .idea/
 docs/plans/
 scripts/workflows/
+.superpowers/
+.reviews/

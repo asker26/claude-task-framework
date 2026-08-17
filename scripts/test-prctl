@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Integration tests for the PR cockpit (migrate-v5, pr-sync, pr_board view, prctl, pr-review-run, pr-worker, hooks).
+# Runs offline: fake `gh` and `claude` shims on PATH, throwaway DB via TASK_DB_PATH.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+export TASK_DB_PATH="$TMP/test.db" CTF_GH_ME=testme CTF_PR_NOTIFY=0 CTF_PR_ORG=FS-Code \
+       CTF_PR_REVIEWS_DIR="$TMP/reviews" CTF_TMUX_SESSION="ctf-test-none-$$" FAKE_DIR="$TMP/fake"
+mkdir -p "$FAKE_DIR/bin" "$FAKE_DIR/gh"
+export PATH="$FAKE_DIR/bin:$PATH"
+unset CLAUDE_CODE_SESSION_ID
+
+fail=0
+ok()  { printf "  [ok] %s\n" "$1"; }
+bad() { printf "  [FAIL] %s\n" "$1"; fail=1; }
+chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+db()  { sqlite3 "$TASK_DB_PATH" "$1"; }
+reset_db() {
+  rm -f "$TASK_DB_PATH"
+  sqlite3 "$TASK_DB_PATH" "CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT, github_repo TEXT, local_path TEXT);"
+  "$ROOT/scripts/migrate-v5-prs.sh" >/dev/null
+}
+
+# ===================================================================== 1. schema
+echo "== schema =="
+reset_db
+for t in prs pr_reviews sessions pr_claims pr_settings; do
+  chk "table $t exists" "db 'SELECT 1 FROM $t LIMIT 0;'"
+done
+chk "view pr_board exists" "db 'SELECT 1 FROM pr_board LIMIT 0;'"
+chk "settings seeded" "[[ \$(db \"SELECT value FROM pr_settings WHERE key='max_diff';\") == 3000 ]]"
+"$ROOT/scripts/migrate-v5-prs.sh" >/dev/null
+chk "migration is idempotent" "db 'SELECT 1 FROM pr_board LIMIT 0;'"
+chk "prs unique (repo,number)" "! db \"INSERT INTO prs (repo,number) VALUES ('FS-Code/a',1),('FS-Code/a',1);\" 2>/dev/null"
+
+# --- summary ---
+echo ""
+if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi
