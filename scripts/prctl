@@ -72,14 +72,14 @@ section() {  # title, status filter SQL, extra where
     FROM pr_board WHERE ($3) AND ($2)
     ORDER BY stale DESC, age_days DESC, repo, number;")"
   [[ -n "$rows" ]] || return 0
-  cols="$(tput cols 2>/dev/null || echo 120)"; title_w=$(( cols - 84 )); (( title_w < 20 )) && title_w=20
+  cols="$(tput cols 2>/dev/null || echo 120)"; title_w=$(( cols - 90 )); (( title_w < 20 )) && title_w=20
   echo "$1"
   while IFS=$'\x1f' read -r repo num status verdict behind stale ready conflicts ci_red too_big age waiting author claims checks decision title; do
-    printf '  %-28s %-20s %4s  %-12s %-14s %s\n' \
+    printf '  %-28s %-20s %4s  %-12s %-20s %s\n' \
       "$(pr_ref_short "$repo" "$num")" \
       "$(row_status_text "$status" "$verdict" "$behind" "$ready" "$waiting" "$decision")" \
       "${age}d" "${author:0:12}" \
-      "$(row_flags "$stale" "$conflicts" "$ci_red" "$checks" "$status" "$claims" "$too_big" | cut -c1-14)" \
+      "$(row_flags "$stale" "$conflicts" "$ci_red" "$checks" "$status" "$claims" "$too_big" | cut -c1-20)" \
       "${title:0:$title_w}"
   done <<< "$rows"
 }
@@ -270,6 +270,83 @@ cmd_post() {
   echo "posted $event review on $(pr_ref_short "$repo" "$num") (gh review ${ghid})"
 }
 
+# ---------------------------------------------------------------- sessions
+session_override=""; REST=()
+take_session_opt() {  # strips --session <id> from "$@" into session_override; the rest lands in REST
+  REST=()
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--session" ]]; then session_override="${2:-}"; shift 2; else REST+=("$1"); shift; fi
+  done
+}
+current_session() {
+  local s="${session_override:-${CLAUDE_CODE_SESSION_ID:-}}"
+  [[ -n "$s" ]] || { echo "not inside a Claude session — pass --session <id> (see prctl sessions)" >&2; exit 1; }
+  printf '%s' "$s"
+}
+ensure_session_row() {
+  local repo; repo="$(repo_from_cwd 2>/dev/null || true)"
+  sql "INSERT INTO sessions (id, cwd, repo, last_seen_at) VALUES ($(sql_str "$1"), $(sql_str "$PWD"), $(sql_str "$repo"), CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET last_seen_at = CURRENT_TIMESTAMP, ended_at = NULL;"
+}
+cmd_claim() {
+  local ref note="" id sid
+  take_session_opt "$@"; set -- ${REST[@]+"${REST[@]}"}
+  ref="${1:?ref required}"; shift
+  [[ "${1:-}" == "--note" ]] && note="${2:-}"
+  id="$(pr_id_or_die "$ref")"; sid="$(current_session)"; ensure_session_row "$sid"
+  sql "INSERT INTO pr_claims (pr_id, session_id, note)
+       SELECT $id, $(sql_str "$sid"), $(sql_str "$note")
+       WHERE NOT EXISTS (SELECT 1 FROM pr_claims WHERE pr_id = $id AND session_id = $(sql_str "$sid") AND released_at IS NULL);
+       UPDATE sessions SET label = COALESCE(label, $(sql_str "$(pr_ref_of_id "$id")")) WHERE id = $(sql_str "$sid");"
+  echo "claimed $(pr_ref_of_id "$id") for session ${sid:0:8}"
+}
+cmd_release() {
+  local sid id
+  take_session_opt "$@"; set -- ${REST[@]+"${REST[@]}"}
+  sid="$(current_session)"
+  if [[ "${1:-}" == "--all" || -z "${1:-}" ]]; then
+    sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP WHERE session_id = $(sql_str "$sid") AND released_at IS NULL;"
+    echo "released all claims of session ${sid:0:8}"
+  else
+    id="$(pr_id_or_die "$1")"
+    sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP WHERE session_id = $(sql_str "$sid") AND pr_id = $id AND released_at IS NULL;"
+    echo "released $(pr_ref_of_id "$id")"
+  fi
+}
+cmd_whoami() {
+  local sid
+  take_session_opt "$@"
+  sid="$(current_session)"
+  sql_ro "SELECT 'this session = s:' || COALESCE(label, substr(id, 1, 4)) || ' · id ' || substr(id, 1, 8) || ' · ' || COALESCE(repo, 'no repo') || ' · claims: ' ||
+                 COALESCE((SELECT group_concat(substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number, ', ') FROM pr_claims c JOIN prs p ON p.id = c.pr_id
+                           WHERE c.session_id = sessions.id AND c.released_at IS NULL), 'none')
+          FROM sessions WHERE id = $(sql_str "$sid");" | grep . || echo "this session = ${sid:0:8} (not registered yet — run any prctl claim, or install the hooks)"
+}
+cmd_label() {
+  local sid
+  take_session_opt "$@"; set -- ${REST[@]+"${REST[@]}"}
+  sid="$(current_session)"; ensure_session_row "$sid"
+  sql "UPDATE sessions SET label = $(sql_str "${1:?label text required}") WHERE id = $(sql_str "$sid");"
+  echo "session ${sid:0:8} labelled '$1'"
+}
+cmd_sessions() {
+  case "${1:-}" in
+    --prune)
+      sql "DELETE FROM pr_claims WHERE session_id IN (SELECT id FROM sessions WHERE COALESCE(ended_at, last_seen_at) < datetime('now', '-30 days'));
+           DELETE FROM sessions WHERE COALESCE(ended_at, last_seen_at) < datetime('now', '-30 days');"
+      echo "pruned sessions older than 30 days" ;;
+    --all)
+      sql_table "SELECT substr(id, 1, 8) AS id, COALESCE(label, '') AS label, kind, COALESCE(repo, '') AS repo, COALESCE(cwd, '') AS cwd, last_seen_at, COALESCE(ended_at, '') AS ended_at,
+                        (SELECT COUNT(*) FROM pr_claims c WHERE c.session_id = sessions.id AND c.released_at IS NULL) AS claims
+                 FROM sessions ORDER BY last_seen_at DESC;" ;;
+    *)
+      sql_table "SELECT substr(id, 1, 8) AS id, COALESCE(label, '') AS label, kind, COALESCE(repo, '') AS repo, COALESCE(cwd, '') AS cwd, last_seen_at,
+                        COALESCE((SELECT group_concat(substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number, ',') FROM pr_claims c JOIN prs p ON p.id = c.pr_id
+                                  WHERE c.session_id = sessions.id AND c.released_at IS NULL), '') AS claims
+                 FROM sessions WHERE ended_at IS NULL AND last_seen_at > datetime('now', '-48 hours') ORDER BY last_seen_at DESC;" ;;
+  esac
+}
+
 # ---------------------------------------------------------------- dispatch
 case "$cmd" in
   board)   cmd_board "$@" ;;
@@ -284,7 +361,11 @@ case "$cmd" in
   unskip)  cmd_unskip "${1:?ref required}" ;;
   config)  cmd_config "$@" ;;
   post)    cmd_post "${1:?ref required}" "${@:2}" ;;
-  claim|release|sessions|whoami|label) echo "prctl $cmd: not implemented yet" >&2; exit 1 ;;
+  claim)   cmd_claim "$@" ;;
+  release) cmd_release "$@" ;;
+  sessions) cmd_sessions "$@" ;;
+  whoami)  cmd_whoami "$@" ;;
+  label)   cmd_label "$@" ;;
   worker)  exec "$ROOT/scripts/pr-worker" "$@" ;;
   *) usage; exit 1 ;;
 esac

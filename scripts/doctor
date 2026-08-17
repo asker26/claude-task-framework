@@ -47,11 +47,11 @@ if [[ -f "$DB" ]]; then
   check "view: pr_board" "sqlite3 '$DB' \"SELECT 1 FROM pr_board LIMIT 0;\"" optional
 fi
 
-for script in taskctl current-focus project-context discord-notify jira-task; do
+for script in taskctl current-focus project-context discord-notify jira-task prctl pr-sync pr-worker pr-review-run; do
   check "scripts/$script executable" "test -x '$ROOT/scripts/$script'"
 done
 
-for hook in session-start.sh; do
+for hook in session-start.sh pr-session-start.sh pr-session-seen.sh pr-session-end.sh; do
   check "hooks/$hook executable" "test -x '$ROOT/hooks/$hook'"
 done
 
@@ -62,6 +62,11 @@ if [[ -f "$CLAUDE_SETTINGS" ]]; then
     printf "$PASS hooks configured in ~/.claude/settings.json\n"
   else
     printf "$WARN hooks not found in ~/.claude/settings.json (run setup.sh to install)\n"
+  fi
+  if grep -q "pr-session-start" "$CLAUDE_SETTINGS" 2>/dev/null; then
+    printf "$PASS PR cockpit hooks configured\n"
+  else
+    printf "$WARN PR cockpit hooks not configured (run scripts/install-pr-hooks.sh)\n"
   fi
 else
   printf "$WARN ~/.claude/settings.json not found\n"

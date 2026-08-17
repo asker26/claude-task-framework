@@ -337,6 +337,61 @@ rm -f "$FAKE_DIR/gh/calls.log"
 "$PRCTL" post alpha#6 --yes >/dev/null 2>&1
 chk "own PR → forced --comment"       "grep -q -- '--comment' \"\$FAKE_DIR/gh/calls.log\""
 
+# ===================================================================== 8. sessions + hooks
+echo "== sessions =="
+reset_db; "$ROOT/scripts/pr-sync" >/dev/null
+GITDIR="$TMP/alpha-clone"; mkdir -p "$GITDIR"; git -C "$GITDIR" init -q; git -C "$GITDIR" remote add origin git@github.com:FS-Code/alpha.git
+hook_in() { printf '{"session_id":"%s","cwd":"%s","hook_event_name":"x"}' "$1" "$2"; }
+hook_in s-one "$GITDIR" | "$ROOT/hooks/pr-session-start.sh"; rc=$?
+chk "start hook exits 0"           "[[ $rc -eq 0 ]]"
+chk "session registered w/ repo"   "[[ \$(db \"SELECT repo FROM sessions WHERE id='s-one';\") == FS-Code/alpha ]]"
+hook_in s-two "$TMP" | "$ROOT/hooks/pr-session-start.sh"
+chk "non-repo cwd → repo NULL"     "[[ \$(db \"SELECT repo IS NULL FROM sessions WHERE id='s-two';\") == 1 ]]"
+chk "start hook prints nothing"    "[[ -z \$(hook_in s-three \"\$TMP\" | \"\$ROOT/hooks/pr-session-start.sh\") ]]"
+chk "hooks survive garbage input"  "echo 'not json' | \"\$ROOT/hooks/pr-session-start.sh\" && echo | \"\$ROOT/hooks/pr-session-seen.sh\""
+chk "hooks survive missing DB"     "TASK_DB_PATH=/nonexistent/x.db \"\$ROOT/hooks/pr-session-start.sh\" <<<'{\"session_id\":\"z\"}'"
+
+export CLAUDE_CODE_SESSION_ID=s-one
+"$PRCTL" claim alpha#1 --note "fixing payments" >/dev/null
+chk "claim recorded"               "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE session_id='s-one' AND released_at IS NULL;\") == 1 ]]"
+chk "claim auto-labels session"    "[[ \$(db \"SELECT label FROM sessions WHERE id='s-one';\") == 'alpha#1' ]]"
+chk "claim idempotent"             "\"\$PRCTL\" claim alpha#1 >/dev/null && [[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE released_at IS NULL;\") == 1 ]]"
+chk "board shows s:label"          "\"\$PRCTL\" board | has 's:alpha#1'"
+chk "whoami"                       "\"\$PRCTL\" whoami | has 's-on'"
+"$PRCTL" label payments >/dev/null
+chk "label sets"                   "[[ \$(db \"SELECT label FROM sessions WHERE id='s-one';\") == payments ]]"
+chk "sessions lists live"          "\"\$PRCTL\" sessions | has payments"
+db "UPDATE sessions SET last_seen_at='2020-01-01 00:00:00' WHERE id='s-one';"
+hook_in s-one "$GITDIR" | "$ROOT/hooks/pr-session-seen.sh"
+chk "seen hook bumps last_seen"    "[[ \$(db \"SELECT last_seen_at > '2021-01-01' FROM sessions WHERE id='s-one';\") == 1 ]]"
+"$PRCTL" claim alpha#2 >/dev/null; "$PRCTL" release alpha#2 >/dev/null
+chk "release one"                  "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE released_at IS NULL;\") == 1 ]]"
+hook_in s-one "$GITDIR" | "$ROOT/hooks/pr-session-end.sh"
+chk "end hook sets ended_at"       "[[ \$(db \"SELECT ended_at IS NOT NULL FROM sessions WHERE id='s-one';\") == 1 ]]"
+chk "end hook releases claims"     "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE released_at IS NULL;\") == 0 ]]"
+chk "ended session hidden"         "! \"\$PRCTL\" sessions | has payments"
+chk "sessions --all shows it"      "\"\$PRCTL\" sessions --all | has payments"
+unset CLAUDE_CODE_SESSION_ID
+chk "claim outside session errors" "! \"\$PRCTL\" claim alpha#1 2>/dev/null"
+chk "--session override works"     "\"\$PRCTL\" claim alpha#1 --session s-two >/dev/null && [[ \$(db \"SELECT session_id FROM pr_claims WHERE released_at IS NULL;\") == s-two ]]"
+db "UPDATE sessions SET last_seen_at='2020-01-01 00:00:00' WHERE id='s-two';"
+"$ROOT/scripts/pr-sync" >/dev/null
+chk "sync releases dead-session claims" "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE released_at IS NULL;\") == 0 ]]"
+db "UPDATE sessions SET ended_at='2020-01-02 00:00:00' WHERE id='s-two';"
+"$PRCTL" sessions --prune >/dev/null
+chk "prune deletes old ended"      "[[ -z \$(db \"SELECT id FROM sessions WHERE id='s-two';\") ]]"
+
+echo "== install-pr-hooks =="
+FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME/.claude"
+echo '{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/other/hook.sh"}]}]},"theme":"dark"}' > "$FAKE_HOME/.claude/settings.json"
+HOME="$FAKE_HOME" "$ROOT/scripts/install-pr-hooks.sh" >/dev/null
+chk "installer adds SessionStart"  "jq -e '.hooks.SessionStart[].hooks[].command | select(test(\"pr-session-start\"))' \"\$FAKE_HOME/.claude/settings.json\" >/dev/null"
+chk "installer keeps other hooks"  "jq -e '.hooks.UserPromptSubmit[].hooks[].command | select(. == \"/other/hook.sh\")' \"\$FAKE_HOME/.claude/settings.json\" >/dev/null"
+chk "installer keeps other keys"   "[[ \$(jq -r .theme \"\$FAKE_HOME/.claude/settings.json\") == dark ]]"
+HOME="$FAKE_HOME" "$ROOT/scripts/install-pr-hooks.sh" >/dev/null
+chk "installer idempotent"         "[[ \$(jq '[.hooks[][].hooks[].command | select(test(\"pr-session-\"))] | length' \"\$FAKE_HOME/.claude/settings.json\") == 3 ]]"
+chk "installer made a backup"      "ls \"\$FAKE_HOME/.claude/\"settings.json.bak-* >/dev/null 2>&1"
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi

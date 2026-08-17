@@ -1,15 +1,14 @@
 {
   "hooks": {
     "SessionStart": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "__FRAMEWORK_PATH__/hooks/session-start.sh"
-          }
-        ]
-      }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "__FRAMEWORK_PATH__/hooks/session-start.sh" } ] },
+      { "hooks": [ { "type": "command", "command": "__FRAMEWORK_PATH__/hooks/pr-session-start.sh" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "__FRAMEWORK_PATH__/hooks/pr-session-seen.sh" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "__FRAMEWORK_PATH__/hooks/pr-session-end.sh" } ] }
     ]
   }
 }
