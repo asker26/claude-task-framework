@@ -263,7 +263,7 @@ active AS (
 claim_list AS (
     SELECT c.pr_id, group_concat(COALESCE(s.label, substr(s.id, 1, 4)), ',') AS claims
     FROM pr_claims c JOIN sessions s ON s.id = c.session_id
-    WHERE c.released_at IS NULL
+    WHERE c.released_at IS NULL AND s.kind <> 'worker'
     GROUP BY c.pr_id
 ),
 base AS (
