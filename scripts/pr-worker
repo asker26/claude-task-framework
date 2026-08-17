@@ -22,6 +22,11 @@ sync_if_due() {
     "$ROOT/scripts/pr-sync" >/dev/null 2>&1 || echo "sync: some repos failed"
   fi
 }
+kill_review_procs() {  # pid of pr-review-run: its claude child first, then the script (tmux kill-window alone leaves claude running)
+  [[ -n "$1" ]] || return 0
+  pkill -TERM -P "$1" 2>/dev/null || true
+  kill -TERM "$1" 2>/dev/null || true
+}
 release_review_session() {  # review_id
   sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP
         WHERE released_at IS NULL AND session_id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $1 AND cli_session_id IS NOT NULL);
@@ -31,8 +36,8 @@ reap_stuck() {
   local rid prid win pid att
   while IFS='|' read -r rid prid win pid att; do
     [[ -n "$rid" ]] || continue
+    kill_review_procs "$pid"
     if [[ -n "$win" ]]; then tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true; fi
-    if [[ -n "$pid" ]]; then kill -TERM "$pid" 2>/dev/null || true; fi
     att=$((att + 1))
     sql "UPDATE pr_reviews SET status = 'failed', error = 'stuck', attempts = $att, finished_at = CURRENT_TIMESTAMP WHERE id = $rid;"
     release_review_session "$rid"
@@ -98,14 +103,14 @@ case "$cmd" in
     echo "worker started in tmux $TMUX_SESSION:$WORKER_WINDOW (attach: tmux attach -t $TMUX_SESSION)" ;;
   stop)
     if tmux kill-window -t "$TMUX_SESSION:$WORKER_WINDOW" 2>/dev/null; then echo "worker stopped"; else echo "worker not running"; fi
-    while IFS='|' read -r rid win; do
+    while IFS='|' read -r rid win pid; do
       [[ -n "$rid" ]] || continue
+      kill_review_procs "$pid"
       tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true
-      sql "UPDATE pr_reviews SET status = 'failed', error = 'worker stopped', finished_at = CURRENT_TIMESTAMP WHERE id = $rid;
-           INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) SELECT pr_id, head_sha, 'queued', attempts FROM pr_reviews WHERE id = $rid;"
+      sql "UPDATE pr_reviews SET status = 'failed', error = 'worker stopped', finished_at = CURRENT_TIMESTAMP WHERE id = $rid;"
       release_review_session "$rid"
-      echo "aborted review $rid (requeued)"
-    done < <(sql_ro "SELECT id, tmux_window FROM pr_reviews WHERE status = 'running' AND tmux_window IS NOT NULL;")
+      echo "aborted review $rid (not requeued — prctl review <ref> to run it again)"
+    done < <(sql_ro "SELECT id, tmux_window, COALESCE(pid, '') FROM pr_reviews WHERE status = 'running' AND tmux_window IS NOT NULL;")
     setting_del worker_pid ;;
   status)
     echo "worker: $(worker_state_text)"

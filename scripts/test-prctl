@@ -202,6 +202,7 @@ cat > "$FAKE_DIR/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 # fake `claude -p`: emits stream-json; behaviour via $FAKE_CLAUDE_MODE = report (default) | resultonly | noreport | cap | fail
 prompt="${@: -1}"
+printf '%s\n' "$@" > "$FAKE_DIR/claude-args.txt"
 report="$(printf '%s' "$prompt" | grep -oE '[^ ]+\.md' | head -1)"
 echo '{"type":"system","subtype":"init","session_id":"fake-sess-1234","tools":[]}'
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working on '"$report"'"}]}}'
@@ -231,6 +232,12 @@ chk "worker claim released"       "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHE
 chk "board shows staged"          "[[ \$(st alpha 1) == staged ]]"
 chk "prctl staged lists it"       "\"\$PRCTL\" staged | has 'alpha#1'"
 chk "prctl read prints report"    "\"\$PRCTL\" read alpha#1 | has 'Verdict'"
+chk "review runs on claude-sonnet-5 by default" "grep -A1 -x -- '--model' \"\$FAKE_DIR/claude-args.txt\" | has claude-sonnet-5"
+"$PRCTL" config set model claude-opus-4-8 >/dev/null
+"$RUN" "$(pid_of alpha 12)" >/dev/null 2>&1
+chk "config model → --model claude-opus-4-8"   "grep -A1 -x -- '--model' \"\$FAKE_DIR/claude-args.txt\" | has claude-opus-4-8"
+chk "config model rejects others"              "! \"\$PRCTL\" config set model claude-fable-5 2>/dev/null"
+"$PRCTL" config set model claude-sonnet-5 >/dev/null
 
 FAKE_CLAUDE_MODE=resultonly "$RUN" "$(pid_of alpha 2)" >/dev/null 2>&1
 chk "result-only fallback staged" "[[ \$(last_review 2 status) == staged && \$(last_review 2 verdict) == BLOCK ]]"

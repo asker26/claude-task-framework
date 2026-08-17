@@ -257,7 +257,7 @@ scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review un
 scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # queue-only = run only what you queued
-scripts/prctl config set ignore_repos "old-repo,archived-thing"   # also max_diff, stale_author_days, stale_days, ignore_authors
+scripts/prctl config set model claude-sonnet-5                    # or claude-opus-4-8; also max_diff, stale_author_days, stale_days, ignore_repos, ignore_authors
 ```
 
 Statuses: `running` → `staged` → `review-failed` → `skipped` → `re-review` (author pushed since

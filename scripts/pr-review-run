@@ -69,11 +69,12 @@ finish_failed() {  # error, bump_attempts(0|1), requeue(0|1)
   echo "=== failed: $1 ==="
 }
 
+model="${CTF_PR_CLAUDE_MODEL:-$(setting_get model)}"; model="${model:-claude-sonnet-5}"
 cd "$work_dir"
-echo "=== review $review_id · $short · ${head_sha:0:7} · cwd $work_dir ==="
+echo "=== review $review_id · $short · ${head_sha:0:7} · model $model · cwd $work_dir ==="
 set +eo pipefail
 env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
-  claude --dangerously-skip-permissions -p --output-format stream-json --verbose "$prompt" 2>&1 \
+  claude --dangerously-skip-permissions -p --output-format stream-json --verbose --model "$model" "$prompt" 2>&1 \
 | while IFS= read -r line; do
     printf '%s\n' "$line" | tee -a "$log"
     sqlite3 -cmd '.timeout 5000' "$DB" "UPDATE pr_reviews SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = $review_id;" 2>/dev/null

@@ -17,7 +17,7 @@ usage: prctl <command> [args]
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
   worker start [--sync-only|--queue-only] | stop | status
-  config list | get <key> | set <key> <value>      keys: max_diff stale_author_days stale_days ignore_repos ignore_authors
+  config list | get <key> | set <key> <value>      keys: model (claude-sonnet-5|claude-opus-4-8) max_diff stale_author_days stale_days ignore_repos ignore_authors
 ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
 EOF
 }
@@ -193,12 +193,14 @@ cmd_unskip() {
   echo "unskipped $(pr_ref_of_id "$id")"
 }
 cmd_config() {
-  local int_keys=" max_diff stale_author_days stale_days " str_keys=" ignore_repos ignore_authors "
+  local int_keys=" max_diff stale_author_days stale_days " str_keys=" ignore_repos ignore_authors model "
   case "${1:-list}" in
     list) sql_table "SELECT key, value, updated_at FROM pr_settings ORDER BY key;" ;;
     get)  setting_get "$2"; echo ;;
     set)  if [[ "$int_keys" == *" $2 "* ]]; then
             [[ "$3" =~ ^[0-9]+$ ]] || { echo "value must be an integer" >&2; exit 1; }
+          elif [[ "$2" == model ]]; then
+            [[ "$3" == claude-sonnet-5 || "$3" == claude-opus-4-8 ]] || { echo "model must be claude-sonnet-5 or claude-opus-4-8" >&2; exit 1; }
           elif [[ "$str_keys" != *" $2 "* ]]; then
             echo "unknown key $2 — one of:$int_keys$str_keys" >&2; exit 1
           fi
