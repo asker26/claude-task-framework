@@ -72,6 +72,18 @@ finish_failed() {  # error, bump_attempts(0|1), requeue(0|1)
 model="${CTF_PR_CLAUDE_MODEL:-$(setting_get model)}"; model="${model:-claude-sonnet-5}"
 cd "$work_dir"
 echo "=== review $review_id · $short · ${head_sha:0:7} · model $model · cwd $work_dir ==="
+
+# reviewer-ultra's parent is silent for the whole time its foreground finders run (20+ min);
+# tick while this script is alive so the worker only reaps rows whose runner actually died.
+(
+  while kill -0 $$ 2>/dev/null; do
+    sqlite3 -cmd '.timeout 5000' "$DB" "UPDATE pr_reviews SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = $review_id AND status = 'running';" 2>/dev/null
+    sleep "${CTF_PR_HEARTBEAT:-60}"
+  done
+) &
+heartbeat_pid=$!
+trap 'pkill -P "$heartbeat_pid" 2>/dev/null; kill "$heartbeat_pid" 2>/dev/null || true' EXIT
+
 set +eo pipefail
 env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
   claude --dangerously-skip-permissions -p --output-format stream-json --verbose --model "$model" "$prompt" 2>&1 \
