@@ -292,6 +292,51 @@ chk "worker status runs"                    "\"\$WORKER\" status | has 'worker: 
 chk "prctl worker delegates"                "\"\$PRCTL\" worker status | has 'worker: stopped'"
 unset FAKE_CLAUDE_MODE
 
+# ===================================================================== 7. prctl post
+echo "== prctl post =="
+reset_db; "$ROOT/scripts/pr-sync" >/dev/null
+view_fixture() { jq ".[] | select(.number==$1) + {state:\"OPEN\"}" "$FAKE_DIR/gh/list-alpha.json" > "$FAKE_DIR/gh/view-alpha-$1.json"; }
+for n in 1 2 3 4 5 6; do view_fixture $n; done
+echo '[{"id":555,"user":{"login":"testme"},"state":"APPROVED"}]' > "$FAKE_DIR/gh/reviews-api.json"
+rm -f "$FAKE_DIR/gh/calls.log" "$FAKE_DIR/gh/last-body.md"
+chk "post with nothing staged fails"  "! \"\$PRCTL\" post alpha#1 --yes 2>/dev/null"
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 1)" >/dev/null 2>&1
+out="$("$PRCTL" post alpha#1 --yes 2>&1)"; rc=$?
+chk "post exits 0"                    "[[ $rc -eq 0 ]]"
+chk "gh pr review --approve called"   "grep -q -- '--approve' \"\$FAKE_DIR/gh/calls.log\""
+chk "transparency sections stripped"  "! grep -q 'False Positives' \"\$FAKE_DIR/gh/last-body.md\" && ! grep -q 'Dropped as defensive' \"\$FAKE_DIR/gh/last-body.md\""
+chk "confirmed findings kept"         "grep -q 'one real finding' \"\$FAKE_DIR/gh/last-body.md\" && grep -q 'Verdict' \"\$FAKE_DIR/gh/last-body.md\""
+chk "review marked posted w/ gh id"   "[[ \$(db \"SELECT status||':'||gh_review_id FROM pr_reviews WHERE pr_id=$(pid_of alpha 1) ORDER BY id DESC LIMIT 1;\") == posted:555 ]]"
+chk "prs.my_review_* updated"         "[[ \$(db \"SELECT my_review_state||':'||my_review_sha FROM prs WHERE id=$(pid_of alpha 1);\") == APPROVED:aaa1111 ]]"
+chk "board flips to approved"         "[[ \$(st alpha 1) == approved ]]"
+chk "second post refuses"             "! \"\$PRCTL\" post alpha#1 --yes 2>/dev/null"
+rm -f "$FAKE_DIR/gh/calls.log"
+"$PRCTL" post alpha#1 --yes --force >/dev/null 2>&1
+chk "--force reposts"                 "grep -q 'pr review' \"\$FAKE_DIR/gh/calls.log\""
+
+FAKE_CLAUDE_MODE=resultonly "$RUN" "$(pid_of alpha 2)" >/dev/null 2>&1
+db "UPDATE prs SET head_sha='moved99' WHERE id=$(pid_of alpha 2);"
+jq '.headRefOid="moved99"' "$FAKE_DIR/gh/view-alpha-2.json" > "$FAKE_DIR/gh/tmp.json" && mv "$FAKE_DIR/gh/tmp.json" "$FAKE_DIR/gh/view-alpha-2.json"
+rm -f "$FAKE_DIR/gh/calls.log"
+out="$("$PRCTL" post alpha#2 --yes 2>&1)"
+chk "BLOCK → --request-changes"       "grep -q -- '--request-changes' \"\$FAKE_DIR/gh/calls.log\""
+chk "warns when head moved"           "grep -qi 'head is' <<<\"\$out\""
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 3)" >/dev/null 2>&1
+rm -f "$FAKE_DIR/gh/calls.log"
+"$PRCTL" post alpha#3 --yes --verdict C >/dev/null 2>&1
+chk "--verdict C → --comment"         "grep -q -- '--comment' \"\$FAKE_DIR/gh/calls.log\""
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 4)" >/dev/null 2>&1
+"$PRCTL" post alpha#4 --yes --full >/dev/null 2>&1
+chk "--full body has False Positives" "grep -q 'False Positives' \"\$FAKE_DIR/gh/last-body.md\""
+touch "$FAKE_DIR/gh/review-fail"
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 5)" >/dev/null 2>&1
+chk "gh failure → exit 1, stays staged" "! \"\$PRCTL\" post alpha#5 --yes >/dev/null 2>&1 && [[ \$(st alpha 5) == staged ]]"
+rm -f "$FAKE_DIR/gh/review-fail"
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 6)" >/dev/null 2>&1
+rm -f "$FAKE_DIR/gh/calls.log"
+"$PRCTL" post alpha#6 --yes >/dev/null 2>&1
+chk "own PR → forced --comment"       "grep -q -- '--comment' \"\$FAKE_DIR/gh/calls.log\""
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi

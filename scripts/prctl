@@ -207,6 +207,69 @@ cmd_config() {
   esac
 }
 
+# ---------------------------------------------------------------- post
+strip_transparency() {  # stdin report → stdout without the two transparency sections
+  awk '
+    /^### False Positives Removed/ || /^### Dropped as defensive/ { skipping = 1; next }
+    skipping && (/^## / || /^### / || /^---/ || /\*\*Verdict:\*\*/) { skipping = 0 }
+    !skipping { print }
+  '
+}
+cmd_post() {
+  local ref="$1" id rid override="" full=0 yes=0 force=0 repo num head state author verdict rsha path event dbstate ghid tmp me
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --verdict) override="$2"; shift 2 ;; --full) full=1; shift ;; --yes|-y) yes=1; shift ;; --force) force=1; shift ;;
+      *) echo "unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+  id="$(pr_id_or_die "$ref")"
+  rid="$(latest_review_id "$id" "'staged'")"
+  if [[ -z "$rid" ]]; then
+    if [[ "$force" == 1 ]]; then rid="$(latest_review_id "$id" "'posted'")"; fi
+    if [[ -z "$rid" ]]; then
+      if [[ -n "$(latest_review_id "$id" "'posted'")" ]]; then echo "already posted for $(pr_ref_of_id "$id") — --force posts a new review" >&2
+      else echo "nothing staged for $(pr_ref_of_id "$id") — run prctl review $ref" >&2; fi
+      exit 1
+    fi
+  fi
+  "$ROOT/scripts/pr-sync" --pr "$ref" >/dev/null 2>&1 || echo "warn: could not refresh $(pr_ref_of_id "$id") from GitHub" >&2
+  IFS='|' read -r repo num head state author < <(sql_ro "SELECT repo, number, head_sha, state, author FROM prs WHERE id = $id;")
+  [[ "$state" == open ]] || { echo "PR is $state — not posting" >&2; exit 1; }
+  IFS='|' read -r verdict rsha path < <(sql_ro "SELECT COALESCE(verdict, ''), head_sha, report_path FROM pr_reviews WHERE id = $rid;")
+  [[ -n "$path" && -f "$path" ]] || { echo "report file missing: $path" >&2; exit 1; }
+  me="$(gh_me)"
+
+  case "${override:-$verdict}" in
+    A|APPROVE|APPROVE_WITH_COMMENTS) event=approve ;;
+    RC|REQUEST_CHANGES|BLOCK)        event=request-changes ;;
+    C|COMMENT)                       event=comment ;;
+    "")                              event=comment; echo "warn: verdict unparsed — posting as a comment (use --verdict)" >&2 ;;
+    *) echo "bad --verdict '$override' (A|RC|C)" >&2; exit 1 ;;
+  esac
+  if [[ "$author" == "$me" && "$event" != comment ]]; then echo "own PR — GitHub forbids self-review, posting as a comment" >&2; event=comment; fi
+  case "$event" in approve) dbstate=APPROVED ;; request-changes) dbstate=CHANGES_REQUESTED ;; comment) dbstate=COMMENTED ;; esac
+
+  tmp="$(mktemp)"; trap 'rm -f "$tmp"' RETURN
+  if [[ "$full" == 1 ]]; then cp "$path" "$tmp"; else strip_transparency < "$path" > "$tmp"; fi
+  [[ -s "$tmp" ]] || { echo "empty body after stripping — use --full or prctl edit" >&2; exit 1; }
+
+  echo "post → $(pr_ref_short "$repo" "$num") · $event · $(wc -l < "$tmp" | tr -d ' ') lines"
+  if [[ "$rsha" != "$head" ]]; then echo "warn: reviewed ${rsha:0:7}, head is ${head:0:7} — the review may be stale"; fi
+  if [[ "$yes" != 1 ]]; then
+    head -n 15 "$tmp" | sed 's/^/  | /'
+    read -r -p "Post this $event review? [y/N] " ans
+    [[ "$ans" == y || "$ans" == Y ]] || { echo "aborted"; exit 1; }
+  fi
+  gh pr review "$num" --repo "$repo" "--$event" --body-file "$tmp" || { echo "gh pr review failed — nothing recorded" >&2; exit 1; }
+  ghid="$(gh api "repos/$repo/pulls/$num/reviews" --jq "[.[] | select(.user.login == \"$me\")] | last | .id // empty" 2>/dev/null || true)"
+  [[ "$ghid" =~ ^[0-9]+$ ]] || ghid=NULL
+  sql "UPDATE pr_reviews SET status = 'posted', posted_at = CURRENT_TIMESTAMP, gh_review_id = $ghid WHERE id = $rid;
+       UPDATE prs SET my_review_state = '$dbstate', my_review_sha = $(sql_str "$head"), my_review_at = CURRENT_TIMESTAMP WHERE id = $id;"
+  echo "posted $event review on $(pr_ref_short "$repo" "$num") (gh review ${ghid})"
+}
+
 # ---------------------------------------------------------------- dispatch
 case "$cmd" in
   board)   cmd_board "$@" ;;
@@ -220,7 +283,8 @@ case "$cmd" in
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
   unskip)  cmd_unskip "${1:?ref required}" ;;
   config)  cmd_config "$@" ;;
-  post|claim|release|sessions|whoami|label) echo "prctl $cmd: not implemented yet" >&2; exit 1 ;;
+  post)    cmd_post "${1:?ref required}" "${@:2}" ;;
+  claim|release|sessions|whoami|label) echo "prctl $cmd: not implemented yet" >&2; exit 1 ;;
   worker)  exec "$ROOT/scripts/pr-worker" "$@" ;;
   *) usage; exit 1 ;;
 esac
