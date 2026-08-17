@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # PR cockpit worker: keeps the board synced and runs reviewer-ultra on PRs that need review, one at a time.
-# usage: pr-worker start [--sync-only] | stop | status | run [--sync-only] | cycle [--sync-only] [--inline]
+# usage: pr-worker start [--sync-only|--queue-only] | stop | status | run [...] | cycle [...] [--inline]
+#   --sync-only  keep the board fresh, never run reviews      --queue-only  run only reviews queued with `prctl review`
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
 require_db
@@ -11,8 +12,8 @@ MAX_REVIEWS="${CTF_PR_MAX_REVIEWS:-1}"
 STUCK_MIN="${CTF_PR_STUCK_TIMEOUT:-30}"
 
 cmd="${1:-status}"; [[ $# -gt 0 ]] && shift
-sync_only=0; inline=0
-for a in "$@"; do case "$a" in --sync-only) sync_only=1 ;; --inline) inline=1 ;; *) echo "unknown option $a" >&2; exit 1 ;; esac; done
+sync_only=0; queue_only=0; inline=0
+for a in "$@"; do case "$a" in --sync-only) sync_only=1 ;; --queue-only) queue_only=1 ;; --inline) inline=1 ;; *) echo "unknown option $a" >&2; exit 1 ;; esac; done
 
 sync_if_due() {
   local last
@@ -53,6 +54,7 @@ pick_review() {  # prints "review_id|pr_id" (creates the queued row for auto pic
   row="$(sql_ro "SELECT r.id || '|' || r.pr_id FROM pr_reviews r JOIN prs p ON p.id = r.pr_id
                  WHERE r.status = 'queued' AND p.state = 'open' ORDER BY r.queued_at, r.id LIMIT 1;")"
   if [[ -n "$row" ]]; then printf '%s' "$row"; return 0; fi
+  [[ "$queue_only" == 1 ]] && return 0
   prid="$(sql_ro "SELECT id FROM pr_board WHERE status IN ('re-review', 'needs-review') AND too_big = 0
                   ORDER BY CASE status WHEN 're-review' THEN 0 ELSE 1 END,
                            CASE status WHEN 're-review' THEN last_commit_at ELSE gh_created_at END, id LIMIT 1;")"
@@ -83,7 +85,7 @@ cycle() {
 run_loop() {
   setting_set worker_started_at "$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
   setting_set worker_pid "$$"
-  setting_set worker_mode "$([[ "$sync_only" == 1 ]] && echo sync-only || echo auto)"
+  setting_set worker_mode "$(if [[ "$sync_only" == 1 ]]; then echo sync-only; elif [[ "$queue_only" == 1 ]]; then echo queue-only; else echo auto; fi)"
   echo "pr-worker started (poll ${POLL}s, sync ${SYNC_INTERVAL}s, max ${MAX_REVIEWS} review, stuck ${STUCK_MIN}m, mode $(setting_get worker_mode))"
   while true; do cycle; sleep "$POLL"; done
 }
@@ -92,7 +94,7 @@ case "$cmd" in
   start)
     if worker_running; then echo "worker already running in $TMUX_SESSION:$WORKER_WINDOW"; exit 0; fi
     tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
-    tmux new-window -d -t "$TMUX_SESSION" -n "$WORKER_WINDOW" "$0 run $([[ "$sync_only" == 1 ]] && echo --sync-only)"
+    tmux new-window -d -t "$TMUX_SESSION" -n "$WORKER_WINDOW" "$0 run $([[ "$sync_only" == 1 ]] && echo --sync-only) $([[ "$queue_only" == 1 ]] && echo --queue-only)"
     echo "worker started in tmux $TMUX_SESSION:$WORKER_WINDOW (attach: tmux attach -t $TMUX_SESSION)" ;;
   stop)
     if tmux kill-window -t "$TMUX_SESSION:$WORKER_WINDOW" 2>/dev/null; then echo "worker stopped"; else echo "worker not running"; fi
@@ -111,5 +113,5 @@ case "$cmd" in
                FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status IN ('queued', 'running') ORDER BY r.status DESC, r.id;" ;;
   run)   run_loop ;;
   cycle) cycle ;;
-  *) echo "usage: pr-worker start [--sync-only] | stop | status | run | cycle [--inline]" >&2; exit 1 ;;
+  *) echo "usage: pr-worker start [--sync-only|--queue-only] | stop | status | run | cycle [--inline]" >&2; exit 1 ;;
 esac

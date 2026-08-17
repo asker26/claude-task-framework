@@ -16,7 +16,7 @@ usage: prctl <command> [args]
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
-  worker start [--sync-only] | stop | status
+  worker start [--sync-only|--queue-only] | stop | status
   config list | get <key> | set <key> <value>      keys: max_diff stale_author_days stale_days ignore_repos ignore_authors
 ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
 EOF

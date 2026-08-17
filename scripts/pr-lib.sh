@@ -115,8 +115,9 @@ worker_state_text() {
   fi
   run="$(sql_ro "SELECT substr(p.repo, instr(p.repo,'/')+1) || '#' || p.number || ' (' || CAST((julianday('now') - julianday(r.started_at)) * 1440 AS INTEGER) || 'm)'
                  FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'running' ORDER BY r.started_at LIMIT 1;")"
+  local mode; mode="$(setting_get worker_mode)"
   if [[ -n "$run" ]]; then printf 'reviewing %s' "$run"
-  elif [[ "$(setting_get worker_mode)" == sync-only ]]; then printf 'idle (sync-only)'
+  elif [[ "$mode" == sync-only || "$mode" == queue-only ]]; then printf 'idle (%s)' "$mode"
   else printf 'idle'; fi
 }
 

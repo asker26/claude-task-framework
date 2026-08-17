@@ -172,6 +172,29 @@ scripts/taskctl agents                 # list profiles
 scripts/taskctl assign 42 Maya         # assign task to agent
 ```
 
+## PR Cockpit (prctl)
+
+One board for every open PR across the FS-Code org with *my* review state (from GitHub), locally staged
+`/reviewer-ultra` reports, and which Claude session is on which PR. Use it instead of re-deriving PR state with `gh`.
+
+```bash
+scripts/prctl board                 # NEEDS YOU · WAITING ON AUTHOR · APPROVED · MINE  (--repo X, --all, --fresh, --json)
+scripts/prctl show bookneticsaas#3128
+scripts/prctl review bookneticsaas#3128 [--now]   # queue for the worker / run here
+scripts/prctl staged | read <ref> | edit <ref>
+scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, human-approved, under your account
+scripts/prctl skip <ref> [--days N] | unskip <ref>
+scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
+scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # tmux ctf-agents:pr-worker, one review at a time
+scripts/prctl config set max_diff 3000                          # also stale_author_days, stale_days, ignore_repos, ignore_authors
+```
+
+Statuses (view `pr_board`, first match wins): `running` → `staged` → `review-failed` → `skipped` → `re-review` (author pushed since my review) → `needs-review` → `author-replied` → `waiting-author` → `approved` (`ready ✓` when mergeable + green) → `commented`; drafts and my own PRs are separate. Flags: `STALE` (waiting-author > 3d or idle > 7d), `conflicts`, `ci-red`, `too-big` (> `max_diff` lines — manual review only), `s:<session>` claims.
+
+Worker: `pr-sync` every 5 min (GraphQL, one query per repo that has open PRs), reaps reviews silent for 30 min, picks explicit queue → `re-review` → `needs-review`, runs `pr-review-run` (headless `claude -p` running `/reviewer-ultra`, report written to `.reviews/`), never posts. On a session-cap hit it cools down until the reset time. Env: `CTF_PR_ORG`, `CTF_PR_IGNORE_REPOS`, `CTF_PR_IGNORE_AUTHORS`, `CTF_GH_ME`, `CTF_PR_POLL`, `CTF_PR_SYNC_INTERVAL`, `CTF_PR_MAX_REVIEWS`, `CTF_PR_STUCK_TIMEOUT`, `CTF_PR_NOTIFY`, `CTF_PR_REVIEWS_DIR`.
+
+Session hooks (`hooks/pr-session-*.sh`, installed by `scripts/install-pr-hooks.sh`) register every Claude session; `prctl claim` links the current one (`$CLAUDE_CODE_SESSION_ID`) to a PR. Schema: `scripts/migrate-v5-prs.sh` (existing DBs) / `init-db.sh` (new). Tests: `scripts/test-prctl` (offline, fake `gh`/`claude`). Design: `docs/plans/2026-08-17-pr-cockpit-design.md`.
+
 ## Task Schema
 ```sql
 tasks: id, title, type, status, priority, project_id, parent_task_id,
@@ -190,10 +213,10 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 
 ## Architecture
 
-- **DB**: `tasks.db` (SQLite) — tables: organizations, projects, sprints, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory
+- **DB**: `tasks.db` (SQLite) — tables: organizations, projects, sprints, tasks, agents, agent_profiles, team_members, task_status_changes, project_memories, memory, prs, pr_reviews, sessions, pr_claims, pr_settings (+ view `pr_board`)
 - **Scripts**: `scripts/` — agent system, taskctl CLI, integrations (Discord, Jira, GSC)
-- **Hooks**: `hooks/` — session-start (focus injection)
-- **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`), plus team-lead, docs-lookup, isolate-workspace, ctf-clean (`/ctf-clean` workspace janitor), appstoreconnect, and the ASO suite. The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
+- **Hooks**: `hooks/` — session-start (focus injection), pr-session-start/seen/end (PR cockpit session registry)
+- **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`, `/efnpm` — explain a topic for a non-technical PM), plus team-lead, docs-lookup, isolate-workspace, ctf-clean (`/ctf-clean` workspace janitor), appstoreconnect, the ASO suite, and the review pair: `/reviewer-ultra` (multi-agent PR review: regressions/bugs/smells + validators) and `/readable-ultra` (readability-only review distilled from Clean Code / The Art of Readable Code; composes with reviewer-ultra as a 4th finder). The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
 - **Templates**: `templates/` — Discord embed templates (pr_review, jira_status, seo_monitor)
 - **Workflows**: `scripts/workflows/` — blog-image-gen, gsc-audit
 
@@ -212,6 +235,13 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 | `migrate-v4-sprints.sh` | Idempotent migration: adds the `sprints` table + `tasks.sprint_id` to an existing DB |
 | `agent-clean` | Janitor: safely removes stale `done`-task worktrees, prunes orphaned registrations, kills dead tmux windows, resets orphaned agent rows (`--dry-run` to preview) |
 | `seed-agents.sh` | Seeds the 8 agent profiles (INSERT OR IGNORE) |
+| `prctl` | PR cockpit CLI: board, show, review queue, staged/read/edit/post, skip, claim/sessions, worker, config |
+| `pr-sync` | GitHub → `prs` (GraphQL per repo with open PRs); marks merged/closed; discards their pending reviews |
+| `pr-worker` | Daemon: sync → reap stuck → pick (queue → re-review → needs-review) → run one `pr-review-run` in tmux; session-cap cooldown |
+| `pr-review-run` | One headless `claude -p` `/reviewer-ultra` session for one PR; heartbeat; stages the report as `.reviews/<repo>-<n>-<sha7>.md` |
+| `migrate-v5-prs.sh` | Idempotent migration: PR cockpit tables + `pr_board` view (always recreated) |
+| `install-pr-hooks.sh` | Appends the three PR session hooks to `~/.claude/settings.json` (idempotent, backup) |
+| `test-prctl` | Offline integration test for the whole PR cockpit (fake `gh` + `claude` shims) |
 
 ## Conventions
 

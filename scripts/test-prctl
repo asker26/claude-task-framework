@@ -269,6 +269,11 @@ chk "never picks draft/bot/mine/too_big"    "[[ \$(db \"SELECT COUNT(*) FROM pr_
 chk "explicit queue wins next"              "[[ \$(st beta 1) == staged ]]"
 "$WORKER" cycle --sync-only --inline >/dev/null 2>&1
 chk "--sync-only never picks"               "[[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status IN ('queued','running');\") == 0 ]]"
+n_staged="$(db "SELECT COUNT(*) FROM pr_reviews WHERE status='staged';")"
+"$WORKER" cycle --queue-only --inline >/dev/null 2>&1
+chk "--queue-only skips auto picks"         "[[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status='staged';\") == $n_staged ]]"
+"$PRCTL" review alpha#4 >/dev/null; "$WORKER" cycle --queue-only --inline >/dev/null 2>&1
+chk "--queue-only runs the explicit queue"  "[[ \$(st alpha 4) == staged ]]"
 
 db "UPDATE prs SET head_sha='newsha' WHERE repo='FS-Code/alpha' AND number=2;"
 chk "staged behind head is not re-picked"   "[[ \$(st alpha 2) == staged && \$(col alpha 2 active_review_behind) == 1 ]]"

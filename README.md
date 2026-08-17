@@ -57,6 +57,9 @@ jq --argjson hooks "$(jq '.hooks' /tmp/hooks.json)" '. + {hooks: $hooks}' \
 
 # Or if starting fresh:
 cat hooks.json.example | sed "s|__FRAMEWORK_PATH__|$(pwd)|g" > ~/.claude/settings.json
+
+# PR cockpit session hooks only (idempotent append, keeps everything else):
+scripts/install-pr-hooks.sh
 ```
 
 ## Setting Up Skills
@@ -67,7 +70,7 @@ Copy the included skills to your global Claude skills directory:
 cp -r skills/* ~/.claude/skills/
 ```
 
-This gives you `/refactor`, `/opib`, `/list-prs`, `/summ`, `/team-lead`, `/docs-lookup`, `/isolate`, and `/ctf-clean` (agent-workspace janitor) as slash commands in Claude Code.
+This gives you `/refactor`, `/opib`, `/list-prs`, `/summ`, `/efnpm`, `/team-lead`, `/docs-lookup`, `/isolate`, and `/ctf-clean` (agent-workspace janitor) as slash commands in Claude Code.
 
 The interactive development workflow uses the external **superpowers** skills (see below) instead of the old `/feature` and `/bugfix` mega-skills.
 
@@ -147,6 +150,7 @@ claude-task-framework/
 │   ├── opib/SKILL.md          # Open anything in browser (/opib)
 │   ├── list-prs/SKILL.md      # List open PRs in a table (/list-prs)
 │   ├── summ/SKILL.md          # Summarize current session (/summ)
+│   ├── efnpm/SKILL.md         # Explain for a non-technical PM (/efnpm)
 │   ├── team-lead/SKILL.md     # Scope gate and project switching
 │   ├── docs-lookup/SKILL.md   # Research docs before writing code
 │   ├── isolate-workspace/SKILL.md # Work in isolated repo clones
@@ -235,6 +239,36 @@ scripts/taskctl backlog "my-app"                  # non-done tasks not in any sp
 
 Existing databases gain sprints via `scripts/migrate-v4-sprints.sh` (idempotent); new DBs get
 them from `init-db.sh`. Restrict auto-dispatch to one sprint with `CTF_SPRINT=<id|name>`.
+
+### prctl (PR cockpit)
+
+One board for every open PR across a GitHub org with *your* review state, locally staged
+`/reviewer-ultra` reports, and which Claude session is on which PR. `pr-sync` reads GitHub
+(GraphQL, one query per repo that has open PRs); the `pr_board` view derives every status;
+`pr-worker` runs one headless `/reviewer-ultra` session at a time and stages the report;
+posting is always a human command.
+
+```bash
+scripts/prctl board                    # NEEDS YOU · WAITING ON AUTHOR · APPROVED · MINE  (--repo X, --all, --fresh, --json)
+scripts/prctl show my-repo#42
+scripts/prctl review my-repo#42 [--now]   # queue for the worker / run here
+scripts/prctl staged | read <ref> | edit <ref>
+scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review under your account
+scripts/prctl skip <ref> [--days N] | unskip <ref>
+scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
+scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # queue-only = run only what you queued
+scripts/prctl config set ignore_repos "old-repo,archived-thing"   # also max_diff, stale_author_days, stale_days, ignore_authors
+```
+
+Statuses: `running` → `staged` → `review-failed` → `skipped` → `re-review` (author pushed since
+your review) → `needs-review` → `author-replied` → `waiting-author` → `approved` (`ready ✓` when
+mergeable + green) → `commented`; drafts and your own PRs are listed separately. Flags: `STALE`
+(waiting on the author > 3 days, or no activity > 7 days), `conflicts`, `ci-red`, `too-big`
+(over `max_diff` changed lines — manual review only), `s:<session>` claims.
+
+Existing databases gain the tables via `scripts/migrate-v5-prs.sh` (idempotent); new DBs get
+them from `init-db.sh`. Session hooks: `scripts/install-pr-hooks.sh`. Tests: `scripts/test-prctl`
+(offline — fake `gh` and `claude` shims). Set `CTF_PR_ORG` for a different org (default `FS-Code`).
 
 ### doctor
 
@@ -342,6 +376,13 @@ The `skills/appstoreconnect/` skill provides a workflow for managing App Store m
 | `CTF_MAX_AGENTS` | `3` | Max concurrent agents |
 | `CTF_STUCK_TIMEOUT` | `10` | Minutes before agent considered stuck |
 | `CTF_TMUX_SESSION` | `ctf-agents` | tmux session name |
+| `CTF_PR_ORG` | `FS-Code` | GitHub org swept by `pr-sync` |
+| `CTF_GH_ME` | `gh api user` login | Reviewer identity for the PR board |
+| `CTF_PR_POLL` / `CTF_PR_SYNC_INTERVAL` | `60` / `300` | pr-worker loop period / seconds between syncs |
+| `CTF_PR_MAX_REVIEWS` / `CTF_PR_STUCK_TIMEOUT` | `1` / `30` | Concurrent review sessions / minutes without heartbeat before reap |
+| `CTF_PR_NOTIFY` | `1` | macOS notification when a review is staged |
+| `CTF_PR_REVIEWS_DIR` | `.reviews/` | Staged reports + logs |
+| `CTF_PR_IGNORE_REPOS` / `CTF_PR_IGNORE_AUTHORS` | (config table) | Env override of `prctl config` ignore lists |
 
 ## Requirements
 
