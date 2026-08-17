@@ -253,6 +253,45 @@ chk "prctl review --now stages"    "[[ \$(last_review 11 status) == staged ]]"
 "$RUN" "$(pid_of alpha 11)" >/dev/null 2>&1
 chk "second run same sha → -2 file" "[[ \$(last_review 11 report_path) == *-2.md ]]"
 
+# ===================================================================== 6. pr-worker
+echo "== pr-worker =="
+WORKER="$ROOT/scripts/pr-worker"
+reset_db; "$ROOT/scripts/pr-sync" >/dev/null
+export FAKE_CLAUDE_MODE=report
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "1st pick = re-review alpha#2"          "[[ \$(st alpha 2) == staged ]]"
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "2nd pick = oldest needs-review alpha#1" "[[ \$(st alpha 1) == staged ]]"
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "never picks draft/bot/mine/too_big"    "[[ \$(db \"SELECT COUNT(*) FROM pr_board WHERE status='staged' AND number IN (6,7,8,9);\") == 0 ]]"
+"$PRCTL" review beta#1 >/dev/null
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "explicit queue wins next"              "[[ \$(st beta 1) == staged ]]"
+"$WORKER" cycle --sync-only --inline >/dev/null 2>&1
+chk "--sync-only never picks"               "[[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status IN ('queued','running');\") == 0 ]]"
+
+db "UPDATE prs SET head_sha='newsha' WHERE repo='FS-Code/alpha' AND number=2;"
+chk "staged behind head is not re-picked"   "[[ \$(st alpha 2) == staged && \$(col alpha 2 active_review_behind) == 1 ]]"
+
+export FAKE_CLAUDE_MODE=cap
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "cap sets cooldown"                     "[[ -n \$(db \"SELECT value FROM pr_settings WHERE key='worker_cooldown_until';\") ]]"
+q_before="$(db "SELECT COUNT(*) FROM pr_reviews WHERE status='queued';")"
+out="$("$WORKER" cycle --inline 2>&1)"
+chk "cooldown blocks the next pick"         "grep -q cooldown <<<\"\$out\" && [[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status='queued';\") == $q_before ]]"
+db "UPDATE pr_settings SET value=datetime('now','-1 minute') WHERE key='worker_cooldown_until';"
+export FAKE_CLAUDE_MODE=report
+"$WORKER" cycle --inline >/dev/null 2>&1
+chk "expired cooldown cleared + queued row ran" "[[ -z \$(db \"SELECT value FROM pr_settings WHERE key='worker_cooldown_until';\") && \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status='queued';\") == 0 ]]"
+
+db "INSERT INTO pr_reviews (pr_id, head_sha, status, heartbeat_at, started_at, attempts) VALUES ($(pid_of alpha 12), '0012121', 'running', datetime('now','-45 minutes'), datetime('now','-50 minutes'), 0);"
+"$WORKER" cycle --sync-only --inline >/dev/null 2>&1
+chk "stuck review reaped → failed:stuck"    "[[ \$(db \"SELECT status||':'||error||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) AND status='failed';\") == failed:stuck:1 ]]"
+chk "stuck review requeued once"            "[[ \$(db \"SELECT status||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) ORDER BY id DESC LIMIT 1;\") == queued:1 ]]"
+chk "worker status runs"                    "\"\$WORKER\" status | has 'worker: stopped'"
+chk "prctl worker delegates"                "\"\$PRCTL\" worker status | has 'worker: stopped'"
+unset FAKE_CLAUDE_MODE
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi

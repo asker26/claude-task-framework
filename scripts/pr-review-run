@@ -25,7 +25,7 @@ base="$REVIEWS_DIR/${repo#*/}-${number}-${head_sha:0:7}"
 report="$base.md"; i=2
 while [[ -e "$report" ]]; do report="$base-$i.md"; i=$((i + 1)); done
 log="$REVIEWS_DIR/logs/$(basename "${report%.md}").log"
-: > "$log"
+: > "$log"; rm -f "$log.cap" "$log.result"
 
 sql "UPDATE pr_reviews SET status = 'running', head_sha = $(sql_str "$head_sha"), report_path = $(sql_str "$report"), log_path = $(sql_str "$log"),
        pid = $$, started_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP, finished_at = NULL, error = NULL WHERE id = $review_id;"

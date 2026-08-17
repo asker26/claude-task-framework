@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# PR cockpit worker: keeps the board synced and runs reviewer-ultra on PRs that need review, one at a time.
+# usage: pr-worker start [--sync-only] | stop | status | run [--sync-only] | cycle [--sync-only] [--inline]
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
+require_db
+
+POLL="${CTF_PR_POLL:-60}"
+SYNC_INTERVAL="${CTF_PR_SYNC_INTERVAL:-300}"
+MAX_REVIEWS="${CTF_PR_MAX_REVIEWS:-1}"
+STUCK_MIN="${CTF_PR_STUCK_TIMEOUT:-30}"
+
+cmd="${1:-status}"; [[ $# -gt 0 ]] && shift
+sync_only=0; inline=0
+for a in "$@"; do case "$a" in --sync-only) sync_only=1 ;; --inline) inline=1 ;; *) echo "unknown option $a" >&2; exit 1 ;; esac; done
+
+sync_if_due() {
+  local last
+  last="$(setting_get last_sync_at)"
+  if [[ -z "$last" ]] || (( $(sql_ro "SELECT CAST((julianday('now') - julianday('$last')) * 86400 AS INTEGER);") >= SYNC_INTERVAL )); then
+    "$ROOT/scripts/pr-sync" >/dev/null 2>&1 || echo "sync: some repos failed"
+  fi
+}
+release_review_session() {  # review_id
+  sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP
+        WHERE released_at IS NULL AND session_id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $1 AND cli_session_id IS NOT NULL);
+       UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $1 AND cli_session_id IS NOT NULL);"
+}
+reap_stuck() {
+  local rid prid win pid att
+  while IFS='|' read -r rid prid win pid att; do
+    [[ -n "$rid" ]] || continue
+    if [[ -n "$win" ]]; then tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true; fi
+    if [[ -n "$pid" ]]; then kill -TERM "$pid" 2>/dev/null || true; fi
+    att=$((att + 1))
+    sql "UPDATE pr_reviews SET status = 'failed', error = 'stuck', attempts = $att, finished_at = CURRENT_TIMESTAMP WHERE id = $rid;"
+    release_review_session "$rid"
+    if (( att < 2 )); then
+      sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) SELECT pr_id, head_sha, 'queued', $att FROM pr_reviews WHERE id = $rid;"
+    fi
+    echo "reaped stuck review $rid (attempt $att)"
+  done < <(sql_ro "SELECT id, pr_id, COALESCE(tmux_window, ''), COALESCE(pid, ''), attempts FROM pr_reviews
+                   WHERE status = 'running' AND heartbeat_at < datetime('now', '-$STUCK_MIN minutes');")
+}
+cooldown_active() {
+  local until; until="$(setting_get worker_cooldown_until)"
+  [[ -n "$until" ]] || return 1
+  if [[ "$(sql_ro "SELECT datetime('now') < '$until';")" == 1 ]]; then return 0; fi
+  setting_del worker_cooldown_until; return 1
+}
+pick_review() {  # prints "review_id|pr_id" (creates the queued row for auto picks) or nothing
+  local row prid rid
+  row="$(sql_ro "SELECT r.id || '|' || r.pr_id FROM pr_reviews r JOIN prs p ON p.id = r.pr_id
+                 WHERE r.status = 'queued' AND p.state = 'open' ORDER BY r.queued_at, r.id LIMIT 1;")"
+  if [[ -n "$row" ]]; then printf '%s' "$row"; return 0; fi
+  prid="$(sql_ro "SELECT id FROM pr_board WHERE status IN ('re-review', 'needs-review') AND too_big = 0
+                  ORDER BY CASE status WHEN 're-review' THEN 0 ELSE 1 END,
+                           CASE status WHEN 're-review' THEN last_commit_at ELSE gh_created_at END, id LIMIT 1;")"
+  [[ -n "$prid" ]] || return 0
+  rid="$(sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts)
+              SELECT id, head_sha, 'queued', COALESCE((SELECT MAX(f.attempts) FROM pr_reviews f WHERE f.pr_id = prs.id AND f.head_sha = prs.head_sha AND f.status = 'failed'), 0)
+              FROM prs WHERE id = $prid; SELECT last_insert_rowid();")"
+  printf '%s|%s' "$rid" "$prid"
+}
+launch() {  # review_id pr_id
+  local win; win="review-$(sql_ro "SELECT substr(repo, instr(repo, '/') + 1) || '-' || number FROM prs WHERE id = $2;")"
+  if [[ "$inline" == 1 ]]; then "$ROOT/scripts/pr-review-run" "$2" --review-id "$1" || true; return 0; fi
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+  sql "UPDATE pr_reviews SET tmux_window = $(sql_str "$win") WHERE id = $1;"
+  tmux new-window -d -t "$TMUX_SESSION" -n "$win" "$ROOT/scripts/pr-review-run $2 --review-id $1; sleep 5"
+  echo "launched review $1 in tmux $TMUX_SESSION:$win"
+}
+cycle() {
+  sync_if_due
+  reap_stuck
+  [[ "$sync_only" == 1 ]] && return 0
+  if cooldown_active; then echo "cooldown until $(utc_to_local_hm "$(setting_get worker_cooldown_until)") (session cap)"; return 0; fi
+  (( $(sql_ro "SELECT COUNT(*) FROM pr_reviews WHERE status = 'running';") >= MAX_REVIEWS )) && return 0
+  local pick; pick="$(pick_review)"
+  [[ -n "$pick" ]] || return 0
+  launch "${pick%%|*}" "${pick#*|}"
+}
+run_loop() {
+  setting_set worker_started_at "$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
+  setting_set worker_pid "$$"
+  setting_set worker_mode "$([[ "$sync_only" == 1 ]] && echo sync-only || echo auto)"
+  echo "pr-worker started (poll ${POLL}s, sync ${SYNC_INTERVAL}s, max ${MAX_REVIEWS} review, stuck ${STUCK_MIN}m, mode $(setting_get worker_mode))"
+  while true; do cycle; sleep "$POLL"; done
+}
+
+case "$cmd" in
+  start)
+    if worker_running; then echo "worker already running in $TMUX_SESSION:$WORKER_WINDOW"; exit 0; fi
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+    tmux new-window -d -t "$TMUX_SESSION" -n "$WORKER_WINDOW" "$0 run $([[ "$sync_only" == 1 ]] && echo --sync-only)"
+    echo "worker started in tmux $TMUX_SESSION:$WORKER_WINDOW (attach: tmux attach -t $TMUX_SESSION)" ;;
+  stop)
+    if tmux kill-window -t "$TMUX_SESSION:$WORKER_WINDOW" 2>/dev/null; then echo "worker stopped"; else echo "worker not running"; fi
+    while IFS='|' read -r rid win; do
+      [[ -n "$rid" ]] || continue
+      tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true
+      sql "UPDATE pr_reviews SET status = 'failed', error = 'worker stopped', finished_at = CURRENT_TIMESTAMP WHERE id = $rid;
+           INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) SELECT pr_id, head_sha, 'queued', attempts FROM pr_reviews WHERE id = $rid;"
+      release_review_session "$rid"
+      echo "aborted review $rid (requeued)"
+    done < <(sql_ro "SELECT id, tmux_window FROM pr_reviews WHERE status = 'running' AND tmux_window IS NOT NULL;")
+    setting_del worker_pid ;;
+  status)
+    echo "worker: $(worker_state_text)"
+    sql_table "SELECT r.id, substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number AS ref, r.status, r.attempts, r.heartbeat_at, r.tmux_window
+               FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status IN ('queued', 'running') ORDER BY r.status DESC, r.id;" ;;
+  run)   run_loop ;;
+  cycle) cycle ;;
+  *) echo "usage: pr-worker start [--sync-only] | stop | status | run | cycle [--inline]" >&2; exit 1 ;;
+esac
