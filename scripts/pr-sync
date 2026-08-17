@@ -16,8 +16,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 ME="$(gh_me)" || { echo "cannot resolve GitHub login (gh auth status?)" >&2; exit 1; }
-BOTS="${CTF_PR_IGNORE_AUTHORS:-dependabot[bot],github-actions[bot]}"
-IGNORE_REPOS=",${CTF_PR_IGNORE_REPOS:-},"
+BOTS="${CTF_PR_IGNORE_AUTHORS:-$(setting_get ignore_authors)}"; BOTS="${BOTS:-dependabot[bot],github-actions[bot]}"
+IGNORE_REPOS=",${CTF_PR_IGNORE_REPOS:-$(setting_get ignore_repos)},"
 STARTED_AT="$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
 
 # `gh pr list --json commits` exceeds GitHub's GraphQL node budget on real repos; a hand-written query with commits(last:1) does not.
@@ -75,6 +75,12 @@ case "$mode" in
       sync_repo "$repo" || { failed+=("$repo"); echo "warn: sync failed for $repo" >&2; }
     done ;;
 esac
+
+if [[ "$mode" == all ]]; then
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] && is_ignored "$repo" && sql "UPDATE prs SET state = 'ignored', synced_at = CURRENT_TIMESTAMP WHERE repo = $(sql_str "$repo") AND state = 'open';"
+  done < <(sql_ro "SELECT DISTINCT repo FROM prs WHERE state = 'open';")
+fi
 
 vanished_where="state = 'open' AND synced_at < '$STARTED_AT'"
 [[ "$mode" == repo ]] && vanished_where+=" AND repo = $(sql_str "$only_repo")"

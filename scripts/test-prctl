@@ -14,6 +14,7 @@ fail=0
 ok()  { printf "  [ok] %s\n" "$1"; }
 bad() { printf "  [FAIL] %s\n" "$1"; fail=1; }
 chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+has() { grep -c -- "$@" >/dev/null; }   # grep -q would SIGPIPE the producer and trip pipefail
 db()  { sqlite3 "$TASK_DB_PATH" "$1"; }
 reset_db() {
   rm -f "$TASK_DB_PATH"
@@ -153,6 +154,47 @@ chk "merged PR not in view"   "[[ -z \$(st alpha 99) ]]"
 db "UPDATE pr_settings SET value='100' WHERE key='max_diff';"
 chk "config max_diff drives too_big" "[[ \$(col alpha 1 too_big) == 0 && \$(col alpha 9 too_big) == 1 ]]"
 db "UPDATE pr_settings SET value='3000' WHERE key='max_diff';"
+
+# ===================================================================== 4. prctl basics
+echo "== prctl basics =="
+PRCTL="$ROOT/scripts/prctl"
+out="$("$PRCTL" board 2>&1)"
+chk "board header"            "grep -q 'FS-Code PRs · synced' <<<\"\$out\""
+chk "board NEEDS YOU section" "grep -q '^NEEDS YOU' <<<\"\$out\""
+chk "board lists alpha#1"     "grep -q 'alpha#1 .*needs-review' <<<\"\$out\""
+chk "board STALE flag"        "grep -E 'alpha#3 .*waiting 5d.*STALE' -q <<<\"\$out\""
+chk "board ready ✓"           "grep -q 'alpha#5 .*ready ✓' <<<\"\$out\""
+chk "board MINE section"      "grep -q '^MINE' <<<\"\$out\" && grep -q 'alpha#6' <<<\"\$out\""
+chk "board footer counts"     "grep -q 'skipped 1 · drafts 1' <<<\"\$out\""
+chk "board hides drafts"      "! grep -q 'alpha#7' <<<\"\$out\""
+chk "board --all shows draft" "\"\$PRCTL\" board --all | has 'alpha#7'"
+chk "board --repo filters"    "! \"\$PRCTL\" board --repo beta | has 'alpha#'"
+chk "board --json"            "[[ \$(\"\$PRCTL\" board --json | jq 'length') == 13 ]]"
+chk "show works"              "\"\$PRCTL\" show alpha#2 | has 're-review'"
+chk "bad ref errors"          "! \"\$PRCTL\" show nope 2>/dev/null"
+chk "unknown PR errors"       "! \"\$PRCTL\" show alpha#777 2>/dev/null"
+"$PRCTL" skip alpha#1 --days 2 --reason "wip" >/dev/null
+chk "skip sets skip_until"    "[[ \$(st alpha 1) == skipped ]]"
+"$PRCTL" unskip alpha#1 >/dev/null
+chk "unskip clears"           "[[ \$(st alpha 1) == needs-review ]]"
+chk "config get"              "[[ \$(\"\$PRCTL\" config get max_diff) == 3000 ]]"
+"$PRCTL" config set stale_days 30 >/dev/null
+chk "config set"              "[[ \$(db \"SELECT value FROM pr_settings WHERE key='stale_days';\") == 30 ]]"
+"$PRCTL" config set stale_days 7 >/dev/null
+chk "config rejects unknown"  "! \"\$PRCTL\" config set nope 1 2>/dev/null"
+"$PRCTL" config set ignore_repos beta >/dev/null
+"$ROOT/scripts/pr-sync" >/dev/null
+chk "ignore_repos drops repo (beta#1 → closed check)" "[[ \$(db \"SELECT COUNT(*) FROM pr_board WHERE repo='FS-Code/beta';\") == 0 ]]"
+"$PRCTL" config set ignore_repos "" >/dev/null; "$ROOT/scripts/pr-sync" >/dev/null
+chk "cleared ignore_repos brings beta back" "[[ \$(st beta 1) == needs-review ]]"
+"$PRCTL" review alpha#1 >/dev/null
+chk "review queues a row"     "[[ \$(db \"SELECT status FROM pr_reviews WHERE pr_id=(SELECT id FROM prs WHERE repo='FS-Code/alpha' AND number=1) ORDER BY id DESC LIMIT 1;\") == queued ]]"
+chk "queued shows as running" "[[ \$(st alpha 1) == running ]]"
+chk "review twice refuses"    "! \"\$PRCTL\" review alpha#1 2>/dev/null"
+"$PRCTL" discard alpha#1 >/dev/null
+chk "discard dequeues"        "[[ \$(st alpha 1) == needs-review ]]"
+chk "staged empty"            "! \"\$PRCTL\" staged | has 'alpha#'"
+chk "read with nothing"       "! \"\$PRCTL\" read alpha#1 2>/dev/null"
 
 # --- summary ---
 echo ""

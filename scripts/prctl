@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# PR cockpit CLI: every open PR of the org with my review state, staged reviewer-ultra reports, session claims.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
+
+usage() {
+  cat <<'EOF'
+usage: prctl <command> [args]
+  board [--repo X] [--all] [--fresh] [--json]      what needs you · waiting on author · approved · mine
+  show <ref>                                       one PR: fields, my reviews, claims
+  sync [--repo X]                                  pull from GitHub now
+  review <ref> [--now]                             queue a reviewer-ultra run for the worker, or run it here
+  staged | read <ref> | edit <ref>                 staged reports
+  post <ref> [--verdict A|RC|C] [--full] [--yes] [--force]
+  discard <ref> [--reason T]
+  skip <ref> [--days N] [--reason T] | unskip <ref>
+  claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
+      (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
+  worker start [--sync-only] | stop | status
+  config list | get <key> | set <key> <value>      keys: max_diff stale_author_days stale_days ignore_repos ignore_authors
+ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
+EOF
+}
+
+cmd="${1:-board}"; [[ $# -gt 0 ]] && shift
+[[ "$cmd" == "-h" || "$cmd" == "--help" || "$cmd" == "help" ]] && { usage; exit 0; }
+require_db
+
+# ---------------------------------------------------------------- shared
+maybe_sync() {  # 1 = force
+  local last age
+  last="$(setting_get last_sync_at)"
+  if [[ "$1" == 1 || -z "$last" ]]; then
+    "$ROOT/scripts/pr-sync" >/dev/null || echo "warn: sync had failures" >&2
+    return 0
+  fi
+  age="$(sql_ro "SELECT CAST((julianday('now') - julianday('$last')) * 1440 AS INTEGER);")"
+  if (( age >= 10 )); then "$ROOT/scripts/pr-sync" >/dev/null || echo "warn: sync had failures" >&2; fi
+  return 0
+}
+latest_review_id() {  # pr_id, status list e.g. "'staged','posted'"
+  sql_ro "SELECT id FROM pr_reviews WHERE pr_id = $1 AND status IN ($2) ORDER BY id DESC LIMIT 1;"
+}
+review_field() { sql_ro "SELECT $2 FROM pr_reviews WHERE id = $1;"; }
+
+# ---------------------------------------------------------------- board
+row_status_text() {  # status verdict behind ready waiting decision
+  case "$1" in
+    staged)         printf 'staged %s%s' "${2:-?}" "$([[ "$3" == 1 ]] && printf ' (behind)')" ;;
+    waiting-author) printf 'waiting %sd' "$5" ;;
+    approved)       if [[ "$4" == 1 ]]; then printf 'ready ✓'; else printf 'approved'; fi ;;
+    mine)           if [[ "$4" == 1 ]]; then printf 'ready ✓'; else printf '%s' "$(lower "${6:-no-review}")"; fi ;;
+    *)              printf '%s' "$1" ;;
+  esac
+}
+row_flags() {  # stale conflicts ci_red checks status claims too_big
+  local f=""
+  [[ "$1" == 1 ]] && f+="STALE "
+  [[ "$2" == 1 ]] && f+="conflicts "
+  [[ "$3" == 1 ]] && f+="ci-red "
+  [[ "$4" == SUCCESS && ( "$5" == approved || "$5" == mine ) ]] && f+="green "
+  [[ "$7" == 1 ]] && f+="too-big "
+  [[ -n "$6" ]] && f+="s:$6 "
+  printf '%s' "${f% }"
+}
+section() {  # title, status filter SQL, extra where
+  local rows cols title_w
+  rows="$(sqlite3 -cmd '.timeout 5000' -readonly -separator $'\x1f' "$DB" "
+    SELECT repo, number, status, COALESCE(active_review_verdict, ''), COALESCE(active_review_behind, 0), stale, ready,
+           conflicts, ci_red, too_big, COALESCE(age_days, 0), COALESCE(waiting_days, 0), COALESCE(author, ''), COALESCE(claims, ''),
+           COALESCE(checks, ''), COALESCE(review_decision, ''), COALESCE(title, '')
+    FROM pr_board WHERE ($3) AND ($2)
+    ORDER BY stale DESC, age_days DESC, repo, number;")"
+  [[ -n "$rows" ]] || return 0
+  cols="$(tput cols 2>/dev/null || echo 120)"; title_w=$(( cols - 84 )); (( title_w < 20 )) && title_w=20
+  echo "$1"
+  while IFS=$'\x1f' read -r repo num status verdict behind stale ready conflicts ci_red too_big age waiting author claims checks decision title; do
+    printf '  %-28s %-20s %4s  %-12s %-14s %s\n' \
+      "$(pr_ref_short "$repo" "$num")" \
+      "$(row_status_text "$status" "$verdict" "$behind" "$ready" "$waiting" "$decision")" \
+      "${age}d" "${author:0:12}" \
+      "$(row_flags "$stale" "$conflicts" "$ci_red" "$checks" "$status" "$claims" "$too_big" | cut -c1-14)" \
+      "${title:0:$title_w}"
+  done <<< "$rows"
+}
+cmd_board() {
+  local repo_filter="" show_all=0 fresh=0 as_json=0 where="1=1" last age
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) repo_filter="$2"; shift 2 ;; --all) show_all=1; shift ;; --fresh) fresh=1; shift ;; --json) as_json=1; shift ;;
+      *) echo "unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+  maybe_sync "$fresh"
+  [[ -n "$repo_filter" ]] && where="repo LIKE '%/$(sql_esc "$repo_filter")' COLLATE NOCASE"
+  if [[ "$as_json" == 1 ]]; then
+    sqlite3 -cmd '.timeout 5000' -readonly -json "$DB" "SELECT * FROM pr_board WHERE $where ORDER BY repo, number;"; return 0
+  fi
+  last="$(setting_get last_sync_at)"; age="?"
+  [[ -n "$last" ]] && age="$(sql_ro "SELECT CAST((julianday('now') - julianday('$last')) * 1440 AS INTEGER);")"
+  echo "$PR_ORG PRs · synced ${age}m ago · worker: $(worker_state_text)"
+  section "NEEDS YOU"         "status IN ('running','staged','review-failed','re-review','author-replied','needs-review')" "$where"
+  section "WAITING ON AUTHOR" "status IN ('waiting-author','commented')" "$where"
+  section "APPROVED"          "status = 'approved'" "$where"
+  section "MINE"              "status = 'mine'" "$where"
+  if [[ "$show_all" == 1 ]]; then section "SKIPPED" "status = 'skipped'" "$where"; section "DRAFTS" "status = 'draft'" "$where"; fi
+  sqlite3 -cmd '.timeout 5000' -readonly -separator '|' "$DB" "SELECT
+      (SELECT COUNT(*) FROM pr_board WHERE ($where) AND status = 'skipped'),
+      (SELECT COUNT(*) FROM pr_board WHERE ($where) AND status = 'draft'),
+      (SELECT COUNT(*) FROM pr_board WHERE ($where) AND status = 'needs-review' AND too_big = 0),
+      (SELECT COUNT(*) FROM pr_board WHERE ($where) AND status = 're-review' AND too_big = 0),
+      (SELECT COUNT(*) FROM pr_board WHERE ($where) AND status IN ('needs-review','re-review') AND too_big = 1);" \
+  | { IFS='|' read -r sk dr nr rr tb; echo "skipped $sk · drafts $dr · queue: $nr needs-review, $rr re-review · too-big (manual only): $tb"; }
+}
+
+# ---------------------------------------------------------------- show
+cmd_show() {
+  local id; id="$(pr_id_or_die "$1")"
+  if [[ -n "$(sql_ro "SELECT 1 FROM pr_board WHERE id = $id;")" ]]; then
+    sqlite3 -cmd '.timeout 5000' -readonly -line "$DB" "SELECT repo || '#' || number AS ref, title, author, status, stale, ready, conflicts, ci_red, too_big, url,
+        head_sha, base_ref, mergeable, checks, review_decision, additions, deletions, changed_files,
+        my_review_state, my_review_sha, my_review_at, last_commit_at, last_comment_at, skip_until, skip_reason, claims, synced_at FROM pr_board WHERE id = $id;"
+  else
+    sqlite3 -cmd '.timeout 5000' -readonly -line "$DB" "SELECT repo || '#' || number AS ref, title, author, state, url, head_sha, my_review_state, my_review_sha, my_review_at, synced_at FROM prs WHERE id = $id;"
+  fi
+  echo; echo "reviews:"
+  sql_table "SELECT id, status, verdict, substr(head_sha, 1, 7) AS sha, attempts, queued_at, finished_at, posted_at, error FROM pr_reviews WHERE pr_id = $id ORDER BY id DESC;"
+  echo; echo "claims:"
+  sql_table "SELECT COALESCE(s.label, substr(s.id, 1, 8)) AS session, s.kind, s.repo, c.note, c.claimed_at
+             FROM pr_claims c JOIN sessions s ON s.id = c.session_id WHERE c.pr_id = $id AND c.released_at IS NULL;"
+}
+
+# ---------------------------------------------------------------- reviews
+cmd_review() {
+  local id now=0 sha rid
+  id="$(pr_id_or_die "$1")"; shift
+  [[ "${1:-}" == "--now" ]] && now=1
+  if [[ -n "$(latest_review_id "$id" "'queued','running'")" ]]; then
+    echo "$(pr_ref_of_id "$id") already has a queued/running review (prctl show)" >&2; exit 1
+  fi
+  sha="$(sql_ro "SELECT head_sha FROM prs WHERE id = $id;")"
+  rid="$(sql "INSERT INTO pr_reviews (pr_id, head_sha, status) VALUES ($id, $(sql_str "$sha"), 'queued'); SELECT last_insert_rowid();")"
+  if [[ "$now" == 1 ]]; then exec "$ROOT/scripts/pr-review-run" "$id" --review-id "$rid"; fi
+  echo "queued review $rid for $(pr_ref_of_id "$id") — the worker picks it next (prctl worker status)"
+}
+cmd_staged() {
+  sql_table "SELECT r.id, substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number AS ref, COALESCE(r.verdict, '?') AS verdict,
+                    CASE WHEN r.head_sha <> p.head_sha THEN 'behind' ELSE 'at-head' END AS sha,
+                    CAST((julianday('now') - julianday(r.finished_at)) * 24 AS INTEGER) || 'h' AS age, r.report_path
+             FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'staged' ORDER BY r.finished_at;"
+}
+cmd_read() {
+  local id rid path
+  id="$(pr_id_or_die "$1")"
+  rid="$(latest_review_id "$id" "'staged'")"; [[ -n "$rid" ]] || rid="$(latest_review_id "$id" "'posted','discarded'")"
+  path="$( [[ -n "$rid" ]] && review_field "$rid" report_path || true )"
+  [[ -n "$path" && -f "$path" ]] || { echo "no report for $(pr_ref_of_id "$id")" >&2; exit 1; }
+  cat "$path"
+}
+cmd_edit() {
+  local id rid path
+  id="$(pr_id_or_die "$1")"
+  rid="$(latest_review_id "$id" "'staged'")"
+  path="$( [[ -n "$rid" ]] && review_field "$rid" report_path || true )"
+  [[ -n "$path" && -f "$path" ]] || { echo "nothing staged for $(pr_ref_of_id "$id")" >&2; exit 1; }
+  "${EDITOR:-vi}" "$path"
+}
+cmd_discard() {
+  local id rid reason=""
+  id="$(pr_id_or_die "$1")"; shift
+  [[ "${1:-}" == "--reason" ]] && reason="${2:-}"
+  rid="$(latest_review_id "$id" "'staged','queued'")"
+  if [[ -z "$rid" ]]; then
+    [[ -n "$(latest_review_id "$id" "'running'")" ]] && { echo "review is running — prctl worker stop, or wait" >&2; exit 1; }
+    echo "nothing staged or queued for $(pr_ref_of_id "$id")" >&2; exit 1
+  fi
+  sql "UPDATE pr_reviews SET status = 'discarded', error = $(sql_str "${reason:-discarded}"), finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP) WHERE id = $rid;"
+  echo "discarded review $rid for $(pr_ref_of_id "$id")"
+}
+
+# ---------------------------------------------------------------- skip / config
+cmd_skip() {
+  local id days="" reason="" until="'9999-12-31 00:00:00'"
+  id="$(pr_id_or_die "$1")"; shift
+  while [[ $# -gt 0 ]]; do case "$1" in --days) days="$2"; shift 2 ;; --reason) reason="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac; done
+  [[ -n "$days" ]] && until="datetime('now', '+$days days')"
+  sql "UPDATE prs SET skip_until = $until, skip_reason = $(sql_str "$reason") WHERE id = $id;"
+  echo "skipped $(pr_ref_of_id "$id")${days:+ for $days days}"
+}
+cmd_unskip() {
+  local id; id="$(pr_id_or_die "$1")"
+  sql "UPDATE prs SET skip_until = NULL, skip_reason = NULL WHERE id = $id;"
+  echo "unskipped $(pr_ref_of_id "$id")"
+}
+cmd_config() {
+  local int_keys=" max_diff stale_author_days stale_days " str_keys=" ignore_repos ignore_authors "
+  case "${1:-list}" in
+    list) sql_table "SELECT key, value, updated_at FROM pr_settings ORDER BY key;" ;;
+    get)  setting_get "$2"; echo ;;
+    set)  if [[ "$int_keys" == *" $2 "* ]]; then
+            [[ "$3" =~ ^[0-9]+$ ]] || { echo "value must be an integer" >&2; exit 1; }
+          elif [[ "$str_keys" != *" $2 "* ]]; then
+            echo "unknown key $2 — one of:$int_keys$str_keys" >&2; exit 1
+          fi
+          setting_set "$2" "$3"; echo "$2 = $3" ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+# ---------------------------------------------------------------- dispatch
+case "$cmd" in
+  board)   cmd_board "$@" ;;
+  show)    cmd_show "${1:?ref required}" ;;
+  sync)    "$ROOT/scripts/pr-sync" "$@" ;;
+  review)  cmd_review "${1:?ref required}" "${@:2}" ;;
+  staged)  cmd_staged ;;
+  read)    cmd_read "${1:?ref required}" ;;
+  edit)    cmd_edit "${1:?ref required}" ;;
+  discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
+  skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
+  unskip)  cmd_unskip "${1:?ref required}" ;;
+  config)  cmd_config "$@" ;;
+  post|claim|release|sessions|whoami|label) echo "prctl $cmd: not implemented yet" >&2; exit 1 ;;
+  worker)  exec "$ROOT/scripts/pr-worker" "$@" ;;
+  *) usage; exit 1 ;;
+esac
