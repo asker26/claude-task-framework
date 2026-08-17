@@ -1,9 +1,9 @@
 ---
-name: lead
-description: "Change scope or re-orient mid-session. Usage: /lead [project-name] or /lead to re-run scope gate."
+name: team-lead
+description: "Change scope or re-orient mid-session. Usage: /team-lead [project-name] or /team-lead to re-run scope gate."
 ---
 
-# Lead — Scope Gate
+# Team Lead — Scope Gate
 
 Quick scope lookup. Source of truth is `tasks.db`.
 
