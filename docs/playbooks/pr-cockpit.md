@@ -11,7 +11,7 @@ Design: `docs/plans/2026-08-17-pr-cockpit-design.md` (local). Reference: `README
 ## Setup (once)
 
 ```bash
-echo 'export PATH="$HOME/WebstormProjects/claude-task-framework/scripts:$PATH"' >> ~/.zshrc && exec zsh
+# already done 2026-08-17: ~/.zshrc exports scripts/ on PATH → `prctl` works bare in every new terminal
 scripts/doctor                     # tables + view + hooks should be [ok]
 prctl config list                  # model=claude-sonnet-5, max_diff=3000, stale_*=3/7, ignore_repos=…
 ```

@@ -176,6 +176,9 @@ scripts/taskctl assign 42 Maya         # assign task to agent
 
 One board for every open PR across the FS-Code org with *my* review state (from GitHub), locally staged
 `/reviewer-ultra` reports, and which Claude session is on which PR. Use it instead of re-deriving PR state with `gh`.
+`scripts/` is on the user's PATH (`~/.zshrc`), so `prctl …` works bare in any terminal and as `!prctl …` inside any Claude session.
+A Claude session is NOT needed to run reviews — the worker runs them headlessly in tmux; reports are files under `.reviews/`
+(`prctl staged` / `prctl read <ref>`); posting is always the human's `prctl post <ref>`.
 
 ```bash
 scripts/prctl board                 # NEEDS YOU · WAITING ON AUTHOR · APPROVED · MINE  (--repo X, --all, --fresh, --json)
