@@ -137,6 +137,16 @@ echo "=== Worktree: ${worktree_dir} ==="
 echo "=== Branch: ${branch_name} ==="
 echo ""
 
+# Background heartbeat — ticks every 60s regardless of Claude output
+# Keeps the watcher from killing agents during long thinking pauses
+(
+  while kill -0 $$ 2>/dev/null; do
+    sqlite3 "$DB" "UPDATE agents SET heartbeat_at=CURRENT_TIMESTAMP WHERE id=$agent_id;" 2>/dev/null
+    sleep 60
+  done
+) &
+heartbeat_pid=$!
+
 # Execute with heartbeat on each output line
 # pipefail is set, so pipe exit code = leftmost non-zero exit
 set +eo pipefail
@@ -146,6 +156,9 @@ set +eo pipefail
 done
 exit_code=${PIPESTATUS[0]}
 set -eo pipefail
+
+# Kill background heartbeat
+kill "$heartbeat_pid" 2>/dev/null || true
 
 echo ""
 echo "=== Agent #${agent_id} finished (exit code: $exit_code) ==="
