@@ -196,6 +196,63 @@ chk "discard dequeues"        "[[ \$(st alpha 1) == needs-review ]]"
 chk "staged empty"            "! \"\$PRCTL\" staged | has 'alpha#'"
 chk "read with nothing"       "! \"\$PRCTL\" read alpha#1 2>/dev/null"
 
+# ===================================================================== 5. pr-review-run
+echo "== pr-review-run =="
+cat > "$FAKE_DIR/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+# fake `claude -p`: emits stream-json; behaviour via $FAKE_CLAUDE_MODE = report (default) | resultonly | noreport | cap | fail
+prompt="${@: -1}"
+report="$(printf '%s' "$prompt" | grep -oE '[^ ]+\.md' | head -1)"
+echo '{"type":"system","subtype":"init","session_id":"fake-sess-1234","tools":[]}'
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working on '"$report"'"}]}}'
+case "${FAKE_CLAUDE_MODE:-report}" in
+  report)     printf '# Review\n\n### Confirmed\n- one real finding\n\n### False Positives Removed\n- fp noise\n\n### Dropped as defensive / not a real problem (Round 3)\n- band-aid\n\n---\n\n**Verdict:** APPROVE_WITH_COMMENTS\n**Summary:** fine\n' > "$report"
+              echo '{"type":"result","subtype":"success","result":"REPORT_WRITTEN"}'; exit 0 ;;
+  resultonly) echo '{"type":"result","subtype":"success","result":"# Review\n\n**Verdict:** BLOCK\n**Summary:** bad"}'; exit 0 ;;
+  noreport)   echo '{"type":"result","subtype":"success","result":"done"}'; exit 0 ;;
+  cap)        echo "You've hit your session limit · resets 11:30pm (Asia/Baku)"; exit 1 ;;
+  fail)       echo "boom"; exit 2 ;;
+esac
+EOF
+chmod +x "$FAKE_DIR/bin/claude"
+RUN="$ROOT/scripts/pr-review-run"
+pid_of() { db "SELECT id FROM prs WHERE repo='FS-Code/$1' AND number=$2;"; }
+last_review() { db "SELECT $2 FROM pr_reviews WHERE pr_id=$(pid_of alpha $1) ORDER BY id DESC LIMIT 1;"; }
+
+"$RUN" "$(pid_of alpha 1)" >/dev/null 2>&1; rc=$?
+chk "run exits 0"                 "[[ $rc -eq 0 ]]"
+chk "review staged"               "[[ \$(last_review 1 status) == staged ]]"
+chk "verdict parsed"              "[[ \$(last_review 1 verdict) == APPROVE_WITH_COMMENTS ]]"
+chk "report file exists"          "test -s \"\$(last_review 1 report_path)\""
+chk "log file exists"             "test -s \"\$(last_review 1 log_path)\""
+chk "cli_session_id captured"     "[[ \$(last_review 1 cli_session_id) == fake-sess-1234 ]]"
+chk "worker session registered"   "[[ \$(db \"SELECT kind FROM sessions WHERE id='fake-sess-1234';\") == worker ]]"
+chk "worker claim released"       "[[ \$(db \"SELECT COUNT(*) FROM pr_claims WHERE released_at IS NULL;\") == 0 ]]"
+chk "board shows staged"          "[[ \$(st alpha 1) == staged ]]"
+chk "prctl staged lists it"       "\"\$PRCTL\" staged | has 'alpha#1'"
+chk "prctl read prints report"    "\"\$PRCTL\" read alpha#1 | has 'Verdict'"
+
+FAKE_CLAUDE_MODE=resultonly "$RUN" "$(pid_of alpha 2)" >/dev/null 2>&1
+chk "result-only fallback staged" "[[ \$(last_review 2 status) == staged && \$(last_review 2 verdict) == BLOCK ]]"
+
+FAKE_CLAUDE_MODE=noreport "$RUN" "$(pid_of alpha 3)" >/dev/null 2>&1; rc=$?
+chk "no report → exit 1"          "[[ $rc -ne 0 ]]"
+chk "no report → failed+requeued" "[[ \$(db \"SELECT group_concat(status||':'||attempts) FROM (SELECT status, attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 3) ORDER BY id);\") == 'failed:1,queued:1' ]]"
+
+FAKE_CLAUDE_MODE=fail "$RUN" "$(pid_of alpha 4)" >/dev/null 2>&1
+chk "nonzero exit → failed w/ log tail" "[[ \$(db \"SELECT error FROM pr_reviews WHERE pr_id=$(pid_of alpha 4) AND status='failed';\") == exit\ 2:* ]]"
+
+FAKE_CLAUDE_MODE=cap "$RUN" "$(pid_of alpha 10)" >/dev/null 2>&1
+chk "cap → failed:cap, attempts 0"  "[[ \$(db \"SELECT status||':'||error||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 10) ORDER BY id LIMIT 1;\") == failed:cap:0 ]]"
+chk "cap → requeued"                "[[ \$(last_review 10 status) == queued ]]"
+chk "cap → cooldown set in future"  "[[ \$(db \"SELECT datetime('now') < value FROM pr_settings WHERE key='worker_cooldown_until';\") == 1 ]]"
+db "DELETE FROM pr_settings WHERE key='worker_cooldown_until';"
+
+"$PRCTL" review alpha#11 --now >/dev/null 2>&1
+chk "prctl review --now stages"    "[[ \$(last_review 11 status) == staged ]]"
+"$RUN" "$(pid_of alpha 11)" >/dev/null 2>&1
+chk "second run same sha → -2 file" "[[ \$(last_review 11 report_path) == *-2.md ]]"
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi

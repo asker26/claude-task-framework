@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Run ONE reviewer-ultra session for ONE PR (headless claude -p), heartbeat every output line, stage the report.
+# Used by pr-worker (in a tmux window) and by `prctl review --now` (foreground).
+# usage: pr-review-run <pr_id> [--review-id N]
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
+require_db
+
+pr_id="${1:-}"; [[ "$pr_id" =~ ^[0-9]+$ ]] || { echo "usage: pr-review-run <pr_id> [--review-id N]" >&2; exit 1; }; shift
+review_id=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --review-id) review_id="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac
+done
+
+IFS='|' read -r repo number head_sha < <(sql_ro "SELECT repo, number, head_sha FROM prs WHERE id = $pr_id;")
+[[ -n "${repo:-}" ]] || { echo "unknown pr id $pr_id" >&2; exit 1; }
+short="$(pr_ref_short "$repo" "$number")"
+
+if [[ -z "$review_id" ]]; then
+  review_id="$(sql "INSERT INTO pr_reviews (pr_id, head_sha, status) VALUES ($pr_id, $(sql_str "$head_sha"), 'queued'); SELECT last_insert_rowid();")"
+fi
+
+mkdir -p "$REVIEWS_DIR/logs"
+base="$REVIEWS_DIR/${repo#*/}-${number}-${head_sha:0:7}"
+report="$base.md"; i=2
+while [[ -e "$report" ]]; do report="$base-$i.md"; i=$((i + 1)); done
+log="$REVIEWS_DIR/logs/$(basename "${report%.md}").log"
+: > "$log"
+
+sql "UPDATE pr_reviews SET status = 'running', head_sha = $(sql_str "$head_sha"), report_path = $(sql_str "$report"), log_path = $(sql_str "$log"),
+       pid = $$, started_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP, finished_at = NULL, error = NULL WHERE id = $review_id;"
+
+work_dir="$(sql_ro "SELECT local_path FROM projects WHERE local_path IS NOT NULL AND (github_repo LIKE '%$(sql_esc "$repo")' COLLATE NOCASE OR github_repo LIKE '%$(sql_esc "$repo").git' COLLATE NOCASE) LIMIT 1;")"
+work_dir="${work_dir/#\~/$HOME}"
+[[ -n "$work_dir" && -d "$work_dir" ]] || work_dir="$ROOT"
+
+prompt="Review PR #${number} of ${repo} with the reviewer-ultra skill: run /reviewer-ultra ${number} ${repo} (if the slash form does not expand, invoke the Skill tool with skill 'reviewer-ultra' and args '${number} ${repo}').
+Run every subagent in the FOREGROUND — never pass run_in_background — and do not end your turn while any agent is still running.
+When the final report is complete, write it VERBATIM to ${report} (markdown; it must contain the '**Verdict:**' line with exactly one of BLOCK, REQUEST_CHANGES, APPROVE_WITH_COMMENTS), then reply with the single line REPORT_WRITTEN.
+Do not post anything to GitHub. Do not modify any file other than ${report}."
+
+register_worker_session() {
+  local sid; sid="$(sql_str "$1")"
+  sql "INSERT INTO sessions (id, cwd, repo, label, kind, last_seen_at) VALUES ($sid, $(sql_str "$work_dir"), $(sql_str "$repo"), 'review:$(sql_esc "$short")', 'worker', CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET kind = 'worker', label = 'review:$(sql_esc "$short")', repo = $(sql_str "$repo"), last_seen_at = CURRENT_TIMESTAMP, ended_at = NULL;
+       UPDATE pr_reviews SET cli_session_id = $sid WHERE id = $review_id;
+       INSERT INTO pr_claims (pr_id, session_id, note) VALUES ($pr_id, $sid, 'worker review $review_id');"
+}
+release_worker_session() {
+  sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP
+        WHERE pr_id = $pr_id AND released_at IS NULL AND session_id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $review_id AND cli_session_id IS NOT NULL);
+       UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $review_id AND cli_session_id IS NOT NULL);"
+}
+finish_staged() {
+  sql "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP, error = NULL WHERE id = $review_id;"
+  release_worker_session
+  notify_local "PR review staged" "$short · ${1:-verdict unparsed}"
+  echo "=== staged: $report (${1:-verdict unparsed}) ==="
+}
+finish_failed() {  # error, bump_attempts(0|1), requeue(0|1)
+  local att
+  sql "UPDATE pr_reviews SET status = 'failed', error = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP$([[ "$2" == 1 ]] && printf ', attempts = attempts + 1') WHERE id = $review_id;"
+  release_worker_session
+  att="$(sql_ro "SELECT attempts FROM pr_reviews WHERE id = $review_id;")"
+  if [[ "$3" == 1 ]] && (( att < 2 )); then
+    sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) VALUES ($pr_id, $(sql_str "$head_sha"), 'queued', $att);"
+    echo "requeued (attempt $att)"
+  fi
+  echo "=== failed: $1 ==="
+}
+
+cd "$work_dir"
+echo "=== review $review_id · $short · ${head_sha:0:7} · cwd $work_dir ==="
+set +eo pipefail
+env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
+  claude --dangerously-skip-permissions -p --output-format stream-json --verbose "$prompt" 2>&1 \
+| while IFS= read -r line; do
+    printf '%s\n' "$line" | tee -a "$log"
+    sqlite3 -cmd '.timeout 5000' "$DB" "UPDATE pr_reviews SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = $review_id;" 2>/dev/null
+    case "$line" in
+      *'"subtype":"init"'*) sid="$(printf '%s' "$line" | jq -r '.session_id // empty' 2>/dev/null)"; [[ -n "$sid" ]] && register_worker_session "$sid" ;;
+      *'"type":"result"'*)  printf '%s' "$line" | jq -r '.result // empty' 2>/dev/null > "$log.result" ;;
+    esac
+    if printf '%s' "$line" | grep -qiE "hit your (session |usage |weekly )?limit|rate_limit_error"; then touch "$log.cap"; fi
+  done
+exit_code=${PIPESTATUS[0]}
+set -eo pipefail
+echo "=== claude exited $exit_code ==="
+
+if [[ -f "$log.cap" ]]; then
+  setting_set worker_cooldown_until "$(cooldown_until_from_text "$(cat "$log")")"
+  finish_failed "cap" 0 1
+  exit 1
+fi
+if [[ -s "$report" ]] && grep -q '\*\*Verdict:\*\*' "$report"; then
+  finish_staged "$(report_verdict "$report")"; exit 0
+fi
+if [[ "$exit_code" -eq 0 && -s "$log.result" ]] && grep -q '\*\*Verdict:\*\*' "$log.result"; then
+  cp "$log.result" "$report"
+  finish_staged "$(report_verdict "$report")"; exit 0
+fi
+if [[ "$exit_code" -eq 0 ]]; then
+  finish_failed "no report" 1 1
+else
+  finish_failed "exit $exit_code: $(tail -n 20 "$log" | tr '\n' ' ' | cut -c1-2000)" 1 1
+fi
+exit 1
