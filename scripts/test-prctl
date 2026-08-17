@@ -33,6 +33,127 @@ chk "settings seeded" "[[ \$(db \"SELECT value FROM pr_settings WHERE key='max_d
 chk "migration is idempotent" "db 'SELECT 1 FROM pr_board LIMIT 0;'"
 chk "prs unique (repo,number)" "! db \"INSERT INTO prs (repo,number) VALUES ('FS-Code/a',1),('FS-Code/a',1);\" 2>/dev/null"
 
+# ===================================================================== 2. fake gh + fixtures
+cat > "$FAKE_DIR/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+# fake gh: answers from $FAKE_DIR/gh/*.json; records `pr review` calls in calls.log and copies the body to last-body.md
+set -e
+args=("$@"); jqexpr=""; repo=""; body=""; name=""; number=""
+for ((i=0; i<${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --jq) jqexpr="${args[$((i+1))]}" ;;
+    --repo) repo="${args[$((i+1))]}" ;;
+    --body-file) body="${args[$((i+1))]}" ;;
+    -F) case "${args[$((i+1))]}" in name=*) name="${args[$((i+1))]#name=}" ;; number=*) number="${args[$((i+1))]#number=}" ;; esac ;;
+  esac
+done
+out() { if [[ -n "$jqexpr" ]]; then jq -r "$jqexpr"; else cat; fi; }
+# fixtures are flat (pr-list style); wrap them into the GraphQL node shape pr-sync queries for
+TO_NODE='def to_node: . + {
+  commits: {nodes: [{commit: {committedDate: ((.commits // []) | map(.committedDate) | max),
+                               statusCheckRollup: (if ((.statusCheckRollup // []) | length) > 0 then {contexts: {nodes: .statusCheckRollup}} else null end)}}]},
+  reviews: {nodes: (.reviews // [])}, comments: {nodes: (.comments // [])}};'
+case "$1 $2" in
+  "search prs")  cat "$FAKE_DIR/gh/search.json" | out ;;
+  "api graphql")
+    if [[ -n "$number" ]]; then
+      f="$FAKE_DIR/gh/view-$name-$number.json"; [[ -f "$f" ]] || { echo '{"errors":[{"message":"not found"}]}'; exit 1; }
+      jq "$TO_NODE {data:{repository:{pullRequest: (. | to_node)}}}" "$f"
+    else
+      f="$FAKE_DIR/gh/list-$name.json"; { [[ -f "$f" ]] && cat "$f" || echo '[]'; } | jq "$TO_NODE {data:{repository:{pullRequests:{pageInfo:{hasNextPage:false,endCursor:null}, nodes: map(to_node)}}}}"
+    fi ;;
+  "pr view")     f="$FAKE_DIR/gh/view-${repo#*/}-$3.json"; [[ -f "$f" ]] || { echo "not found" >&2; exit 1; }; cat "$f" | out ;;
+  "pr review")  echo "pr review $*" >> "$FAKE_DIR/gh/calls.log"; [[ -n "$body" ]] && cp "$body" "$FAKE_DIR/gh/last-body.md"; [[ -f "$FAKE_DIR/gh/review-fail" ]] && exit 1; exit 0 ;;
+  "api user")   echo '{"login":"testme"}' | out ;;
+  "api repos"*) f="$FAKE_DIR/gh/reviews-api.json"; { [[ -f "$f" ]] && cat "$f" || echo '[]'; } | out ;;
+  *) echo "fake gh: unhandled: $*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$FAKE_DIR/bin/gh"
+
+ago()  { date -u -v-"$1"d '+%Y-%m-%dT%H:%M:%SZ'; }
+rev()  { jq -n --arg a "$1" --arg s "$2" --arg h "$3" --arg t "$(ago "$4")" '{author:{login:$a}, state:$s, submittedAt:$t, commit:{oid:$h}}'; }
+cmt()  { jq -n --arg a "$1" --arg t "$(ago "$2")" '{author:{login:$a}, createdAt:$t}'; }
+mkpr() { # number author headsha created_days_ago [extra jq object expression, e.g. '{isDraft:true}']
+  local extra="${5:-}"; [[ -n "$extra" ]] || extra='{}'
+  jq -n --argjson n "$1" --arg a "$2" --arg h "$3" --arg c "$(ago "$4")" \
+    '{number:$n, title:("PR "+($n|tostring)), author:{login:$a}, url:("https://github.com/FS-Code/x/pull/"+($n|tostring)),
+      baseRefName:"main", headRefName:("b"+($n|tostring)), headRefOid:$h, isDraft:false, mergeable:"MERGEABLE", reviewDecision:"",
+      additions:10, deletions:2, changedFiles:1, createdAt:$c, updatedAt:$c, statusCheckRollup:[], reviews:[], comments:[],
+      commits:[{oid:$h, committedDate:$c}]}' | jq ". + $extra"
+}
+CR_OK='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]'
+CR_BAD='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]'
+CR_PEND='[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]'
+
+echo '[{"repository":{"nameWithOwner":"FS-Code/alpha"}},{"repository":{"nameWithOwner":"FS-Code/beta"}}]' > "$FAKE_DIR/gh/search.json"
+{
+  mkpr 1  dev1 aaa1111 10
+  mkpr 2  dev1 bbb2222 9  "{reviews:[$(rev testme CHANGES_REQUESTED bbb0000 4)], commits:[{oid:\"bbb2222\",committedDate:\"$(ago 1)\"}], updatedAt:\"$(ago 1)\"}"
+  mkpr 3  dev2 ccc3333 8  "{reviews:[$(rev testme CHANGES_REQUESTED ccc3333 5)], updatedAt:\"$(ago 5)\"}"
+  mkpr 4  dev2 ddd4444 6  "{reviews:[$(rev testme CHANGES_REQUESTED ddd4444 2)], comments:[$(cmt dev2 1)], updatedAt:\"$(ago 1)\"}"
+  mkpr 5  dev1 eee5555 4  "{reviews:[$(rev testme APPROVED eee5555 1)], statusCheckRollup:$CR_OK, updatedAt:\"$(ago 1)\"}"
+  mkpr 6  testme fff6666 1 "{reviewDecision:\"APPROVED\", statusCheckRollup:$CR_OK}"
+  mkpr 7  dev1 0007777 1  '{isDraft:true}'
+  mkpr 8  'dependabot[bot]' 0008888 1
+  mkpr 9  dev2 0009999 1  '{additions:5000, deletions:10}'
+  mkpr 10 dev1 0010101 1  "{statusCheckRollup:$CR_BAD}"
+  mkpr 11 dev1 0011111 1  '{mergeable:"CONFLICTING"}'
+  mkpr 12 dev1 0012121 1  "{statusCheckRollup:$CR_PEND, reviews:[$(rev testme APPROVED 0012121 0)]}"
+} | jq -s '.' > "$FAKE_DIR/gh/list-alpha.json"
+mkpr 1 dev3 abc0001 3 | jq -s '.' > "$FAKE_DIR/gh/list-beta.json"
+echo '{"state":"MERGED"}' > "$FAKE_DIR/gh/view-alpha-99.json"
+
+# ===================================================================== 3. pr-sync + view
+echo "== pr-sync =="
+reset_db
+db "INSERT INTO prs (repo, number, state, head_sha, synced_at) VALUES ('FS-Code/alpha', 99, 'open', 'old', '2020-01-01 00:00:00');
+    INSERT INTO pr_reviews (pr_id, head_sha, status) VALUES (1, 'old', 'staged');"
+"$ROOT/scripts/pr-sync" >/dev/null; rc=$?
+chk "pr-sync exits 0" "[[ $rc -eq 0 ]]"
+chk "13 open PRs synced" "[[ \$(db \"SELECT COUNT(*) FROM prs WHERE state='open';\") == 13 ]]"
+chk "gh_login cached" "[[ \$(db \"SELECT value FROM pr_settings WHERE key='gh_login';\") == testme ]]"
+chk "last_sync_at set" "[[ -n \$(db \"SELECT value FROM pr_settings WHERE key='last_sync_at';\") ]]"
+chk "vanished PR marked merged" "[[ \$(db \"SELECT state FROM prs WHERE repo='FS-Code/alpha' AND number=99;\") == merged ]]"
+chk "its staged review discarded" "[[ \$(db \"SELECT status FROM pr_reviews WHERE id=1;\") == discarded ]]"
+chk "my_review_sha from commit oid" "[[ \$(db \"SELECT my_review_sha FROM prs WHERE repo='FS-Code/alpha' AND number=2;\") == bbb0000 ]]"
+chk "datetimes normalized (no T)" "[[ \$(db \"SELECT gh_created_at FROM prs WHERE repo='FS-Code/alpha' AND number=1;\") != *T* ]]"
+chk "checks FAILURE rollup" "[[ \$(db \"SELECT checks FROM prs WHERE repo='FS-Code/alpha' AND number=10;\") == FAILURE ]]"
+chk "checks PENDING rollup" "[[ \$(db \"SELECT checks FROM prs WHERE repo='FS-Code/alpha' AND number=12;\") == PENDING ]]"
+chk "checks NONE when empty" "[[ \$(db \"SELECT checks FROM prs WHERE repo='FS-Code/alpha' AND number=1;\") == NONE ]]"
+chk "bot auto-skipped" "[[ \$(db \"SELECT skip_until IS NOT NULL FROM prs WHERE repo='FS-Code/alpha' AND number=8;\") == 1 ]]"
+"$ROOT/scripts/pr-sync" >/dev/null
+chk "re-sync is idempotent (still 13)" "[[ \$(db \"SELECT COUNT(*) FROM prs WHERE state='open';\") == 13 ]]"
+db "UPDATE prs SET skip_until=NULL WHERE repo='FS-Code/alpha' AND number=8;"; "$ROOT/scripts/pr-sync" >/dev/null
+chk "unskipped bot stays unskipped" "[[ \$(db \"SELECT skip_until IS NULL FROM prs WHERE repo='FS-Code/alpha' AND number=8;\") == 1 ]]"
+
+echo "== pr_board statuses =="
+st() { db "SELECT status FROM pr_board WHERE repo='FS-Code/$1' AND number=$2;"; }
+col() { db "SELECT $3 FROM pr_board WHERE repo='FS-Code/$1' AND number=$2;"; }
+chk "alpha#1 needs-review"    "[[ \$(st alpha 1) == needs-review ]]"
+chk "alpha#1 stale (idle>7d)" "[[ \$(col alpha 1 stale) == 1 ]]"
+chk "alpha#2 re-review"       "[[ \$(st alpha 2) == re-review ]]"
+chk "alpha#3 waiting-author"  "[[ \$(st alpha 3) == waiting-author ]]"
+chk "alpha#3 stale (>3d)"     "[[ \$(col alpha 3 stale) == 1 ]]"
+chk "alpha#4 author-replied"  "[[ \$(st alpha 4) == author-replied ]]"
+chk "alpha#4 not stale"       "[[ \$(col alpha 4 stale) == 0 ]]"
+chk "alpha#5 approved"        "[[ \$(st alpha 5) == approved ]]"
+chk "alpha#5 ready"           "[[ \$(col alpha 5 ready) == 1 ]]"
+chk "alpha#6 mine"            "[[ \$(st alpha 6) == mine ]]"
+chk "alpha#6 ready"           "[[ \$(col alpha 6 ready) == 1 ]]"
+chk "alpha#7 draft"           "[[ \$(st alpha 7) == draft ]]"
+chk "alpha#8 unskipped bot = needs-review" "[[ \$(st alpha 8) == needs-review ]]"
+db "UPDATE prs SET skip_until='9999-12-31 00:00:00' WHERE repo='FS-Code/alpha' AND number=8;"
+chk "alpha#8 skipped"         "[[ \$(st alpha 8) == skipped ]]"
+chk "alpha#9 too_big"         "[[ \$(col alpha 9 too_big) == 1 ]]"
+chk "alpha#10 ci_red"         "[[ \$(col alpha 10 ci_red) == 1 ]]"
+chk "alpha#11 conflicts"      "[[ \$(col alpha 11 conflicts) == 1 ]]"
+chk "alpha#12 approved not ready" "[[ \$(st alpha 12) == approved && \$(col alpha 12 ready) == 0 ]]"
+chk "merged PR not in view"   "[[ -z \$(st alpha 99) ]]"
+db "UPDATE pr_settings SET value='100' WHERE key='max_diff';"
+chk "config max_diff drives too_big" "[[ \$(col alpha 1 too_big) == 0 && \$(col alpha 9 too_big) == 1 ]]"
+db "UPDATE pr_settings SET value='3000' WHERE key='max_diff';"
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi

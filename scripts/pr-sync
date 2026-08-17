@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# GitHub → tasks.db: upsert the open PRs of every $CTF_PR_ORG repo that has any; mark vanished ones merged/closed.
+# usage: pr-sync [--repo Org/repo | --pr repo#N]
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
+require_db
+
+mode=all; only_repo=""; only_num=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo) only_repo="$2"; [[ "$only_repo" == */* ]] || only_repo="$PR_ORG/$only_repo"; mode=repo; shift 2 ;;
+    --pr)   parsed="$(pr_ref_parse "$2")" || exit 1; IFS=$'\t' read -r only_repo only_num <<< "$parsed"; mode=pr; shift 2 ;;
+    --fresh) shift ;;
+    *) echo "usage: pr-sync [--repo Org/repo | --pr repo#N]" >&2; exit 1 ;;
+  esac
+done
+
+ME="$(gh_me)" || { echo "cannot resolve GitHub login (gh auth status?)" >&2; exit 1; }
+BOTS="${CTF_PR_IGNORE_AUTHORS:-dependabot[bot],github-actions[bot]}"
+IGNORE_REPOS=",${CTF_PR_IGNORE_REPOS:-},"
+STARTED_AT="$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
+
+# `gh pr list --json commits` exceeds GitHub's GraphQL node budget on real repos; a hand-written query with commits(last:1) does not.
+PR_NODE_FIELDS='number title url isDraft mergeable reviewDecision additions deletions changedFiles createdAt updatedAt
+  author { login } baseRefName headRefName headRefOid
+  commits(last: 1) { nodes { commit { committedDate statusCheckRollup { contexts(first: 100) { nodes { __typename ... on CheckRun { status conclusion } ... on StatusContext { state } } } } } } }
+  reviews(last: 50) { nodes { author { login } state submittedAt commit { oid } } }
+  comments(last: 50) { nodes { author { login } createdAt } }'
+LIST_QUERY="query(\$owner: String!, \$name: String!, \$endCursor: String) { repository(owner: \$owner, name: \$name) {
+  pullRequests(states: OPEN, first: 50, after: \$endCursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+    pageInfo { hasNextPage endCursor } nodes { $PR_NODE_FIELDS } } } }"
+ONE_QUERY="query(\$owner: String!, \$name: String!, \$number: Int!) { repository(owner: \$owner, name: \$name) {
+  pullRequest(number: \$number) { state $PR_NODE_FIELDS } } }"
+
+upsert_json() {  # Org/repo, JSON array of PR nodes
+  { echo "BEGIN;"
+    printf '%s' "$2" | jq -r -f "$ROOT/scripts/pr-sync.jq" --arg repo "$1" --arg me "$ME" --arg bots "$BOTS"
+    echo "COMMIT;"; } | sqlite3 -cmd '.timeout 5000' "$DB"
+}
+sync_repo() {
+  local nodes
+  nodes="$(gh api graphql --paginate -f query="$LIST_QUERY" -F owner="${1%%/*}" -F name="${1#*/}" 2>/dev/null \
+           | jq -s '[.[].data.repository.pullRequests.nodes[]]')" || return 1
+  [[ -n "$nodes" ]] || return 1
+  upsert_json "$1" "$nodes"
+}
+mark_closed() {  # Org/repo N MERGED|CLOSED
+  local s=closed; [[ "$3" == MERGED ]] && s=merged
+  sql "UPDATE prs SET state = '$s', synced_at = CURRENT_TIMESTAMP WHERE repo = $(sql_str "$1") AND number = $2;
+       UPDATE pr_reviews SET status = 'discarded', error = 'pr $s', finished_at = CURRENT_TIMESTAMP
+        WHERE status IN ('queued', 'staged') AND pr_id = (SELECT id FROM prs WHERE repo = $(sql_str "$1") AND number = $2);"
+}
+sync_pr() {  # Org/repo N
+  local node st
+  node="$(gh api graphql -f query="$ONE_QUERY" -F owner="${1%%/*}" -F name="${1#*/}" -F number="$2" 2>/dev/null | jq '.data.repository.pullRequest')" || return 1
+  [[ -n "$node" && "$node" != null ]] || return 1
+  st="$(printf '%s' "$node" | jq -r '.state // "OPEN"')"
+  if [[ "$st" == OPEN ]]; then upsert_json "$1" "[$node]"; else mark_closed "$1" "$2" "$st"; fi
+}
+is_ignored() { [[ "$IGNORE_REPOS" == *",${1#*/},"* ]]; }
+
+failed=(); count=0
+case "$mode" in
+  pr)
+    sync_pr "$only_repo" "$only_num" || { echo "sync failed for $(pr_ref_short "$only_repo" "$only_num")" >&2; exit 1; }
+    echo "synced $(pr_ref_short "$only_repo" "$only_num")"; exit 0 ;;
+  repo)
+    sync_repo "$only_repo" || failed+=("$only_repo"); count=1 ;;
+  all)
+    repos="$(gh search prs --owner "$PR_ORG" --state open --limit 500 --json repository --jq '[.[].repository.nameWithOwner] | unique | .[]' 2>/dev/null)" \
+      || { echo "gh search prs failed (auth? network?)" >&2; exit 1; }
+    for repo in $repos; do
+      is_ignored "$repo" && continue
+      count=$((count + 1))
+      sync_repo "$repo" || { failed+=("$repo"); echo "warn: sync failed for $repo" >&2; }
+    done ;;
+esac
+
+vanished_where="state = 'open' AND synced_at < '$STARTED_AT'"
+[[ "$mode" == repo ]] && vanished_where+=" AND repo = $(sql_str "$only_repo")"
+for f in ${failed[@]+"${failed[@]}"}; do vanished_where+=" AND repo <> $(sql_str "$f")"; done
+while IFS='|' read -r repo num; do
+  [[ -n "$repo" ]] || continue
+  st="$(gh pr view "$num" --repo "$repo" --json state --jq .state 2>/dev/null)" || continue
+  [[ "$st" == OPEN ]] && continue
+  mark_closed "$repo" "$num" "$st"
+done < <(sql_ro "SELECT repo, number FROM prs WHERE $vanished_where;")
+
+sql "UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP
+      WHERE released_at IS NULL AND session_id IN (SELECT id FROM sessions WHERE ended_at IS NOT NULL OR last_seen_at < datetime('now', '-48 hours'));"
+[[ "$mode" == all ]] && setting_set last_sync_at "$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
+
+open_count="$(sql_ro "SELECT COUNT(*) FROM prs WHERE state = 'open';")"
+echo "synced $count repo(s), $open_count open PRs${failed[*]:+, failed: ${failed[*]}}"
+[[ ${#failed[@]} -eq 0 ]]
