@@ -269,6 +269,7 @@ mergeable + green) → `commented`; drafts and your own PRs are listed separatel
 Existing databases gain the tables via `scripts/migrate-v5-prs.sh` (idempotent); new DBs get
 them from `init-db.sh`. Session hooks: `scripts/install-pr-hooks.sh`. Tests: `scripts/test-prctl`
 (offline — fake `gh` and `claude` shims). Set `CTF_PR_ORG` for a different org (default `FS-Code`).
+**Day-to-day guide: [docs/playbooks/pr-cockpit.md](docs/playbooks/pr-cockpit.md).**
 
 ### doctor
 

@@ -193,7 +193,7 @@ Statuses (view `pr_board`, first match wins): `running` → `staged` → `review
 
 Worker: `pr-sync` every 5 min (GraphQL, one query per repo that has open PRs), reaps reviews silent for 30 min, picks explicit queue → `re-review` → `needs-review`, runs `pr-review-run` (headless `claude -p` running `/reviewer-ultra`, report written to `.reviews/`), never posts. On a session-cap hit it cools down until the reset time. Env: `CTF_PR_CLAUDE_MODEL` (overrides `config model`), `CTF_PR_ORG`, `CTF_PR_IGNORE_REPOS`, `CTF_PR_IGNORE_AUTHORS`, `CTF_GH_ME`, `CTF_PR_POLL`, `CTF_PR_SYNC_INTERVAL`, `CTF_PR_MAX_REVIEWS`, `CTF_PR_STUCK_TIMEOUT`, `CTF_PR_NOTIFY`, `CTF_PR_REVIEWS_DIR`.
 
-Session hooks (`hooks/pr-session-*.sh`, installed by `scripts/install-pr-hooks.sh`) register every Claude session; `prctl claim` links the current one (`$CLAUDE_CODE_SESSION_ID`) to a PR. Schema: `scripts/migrate-v5-prs.sh` (existing DBs) / `init-db.sh` (new). Tests: `scripts/test-prctl` (offline, fake `gh`/`claude`). Design: `docs/plans/2026-08-17-pr-cockpit-design.md`.
+Session hooks (`hooks/pr-session-*.sh`, installed by `scripts/install-pr-hooks.sh`) register every Claude session; `prctl claim` links the current one (`$CLAUDE_CODE_SESSION_ID`) to a PR. Schema: `scripts/migrate-v5-prs.sh` (existing DBs) / `init-db.sh` (new). Tests: `scripts/test-prctl` (offline, fake `gh`/`claude`). **Usage playbook: `docs/playbooks/pr-cockpit.md`** (daily loop, where reports live, sessions, troubleshooting). Design: `docs/plans/2026-08-17-pr-cockpit-design.md`.
 
 ## Task Schema
 ```sql
