@@ -17,6 +17,9 @@ usage: prctl <command> [args]
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
   worker start [--sync-only|--queue-only] | stop | status
+  watch [--once] [--interval N]                    live dashboard: worker, current review + last action, queue, staged, recent
+  log <ref>                                        readable live tail of a running/finished review session
+  history [--days N]                               review runs and outcomes (default 2 days)
   config list | get <key> | set <key> <value>      keys: model (claude-sonnet-5|claude-opus-4-8) max_diff stale_author_days stale_days ignore_repos ignore_authors
 ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
 EOF
@@ -349,6 +352,73 @@ cmd_sessions() {
   esac
 }
 
+# ---------------------------------------------------------------- watch / log / history
+stream_activity() {  # stream-json log → last human-readable action
+  tail -n 60 "$1" 2>/dev/null | jq -r '
+    select(.type == "assistant") | .message.content[]?
+    | if .type == "tool_use" then
+        "→ " + .name + ": " + ((.input.description // .input.skill // .input.command // .input.prompt // .input.file_path // "") | tostring | gsub("\n"; " ") | .[0:90])
+      elif .type == "text" and (.text | length) > 0 then "… " + (.text | gsub("\n"; " ") | .[0:90])
+      else empty end' 2>/dev/null | tail -1
+}
+stream_agents() { grep -c '"name":"Agent"' "$1" 2>/dev/null || true; }
+render_watch() {
+  echo "$PR_ORG PR cockpit · $(date '+%H:%M:%S') · synced $(sql_ro "SELECT CAST((julianday('now') - julianday(COALESCE((SELECT value FROM pr_settings WHERE key='last_sync_at'), '2000-01-01'))) * 1440 AS INTEGER);")m ago · worker: $(worker_state_text)"
+  echo
+  local rid ref model started hb log elapsed
+  IFS='|' read -r rid ref started hb log < <(sql_ro "SELECT r.id, substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number, r.started_at, r.heartbeat_at, COALESCE(r.log_path,'')
+                                              FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='running' ORDER BY r.started_at LIMIT 1;") || true
+  if [[ -n "${rid:-}" ]]; then
+    elapsed="$(sql_ro "SELECT CAST((julianday('now') - julianday('$started')) * 1440 AS INTEGER);")"
+    echo "RUNNING  $ref · ${elapsed}m · review $rid · agents spawned: $(stream_agents "$log") · last heartbeat $(sql_ro "SELECT CAST((julianday('now') - julianday('$hb')) * 86400 AS INTEGER);")s ago"
+    echo "         $(stream_activity "$log")"
+  else
+    echo "RUNNING  —"
+  fi
+  echo
+  echo "QUEUE"
+  sql_ro "SELECT '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  (queued ' || CAST((julianday('now') - julianday(r.queued_at)) * 1440 AS INTEGER) || 'm ago' || CASE WHEN r.attempts > 0 THEN ', attempt ' || (r.attempts+1) ELSE '' END || ')'
+          FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='queued' ORDER BY r.queued_at, r.id;" | grep . || echo "  (empty)"
+  echo
+  echo "STAGED — read/post"
+  sql_ro "SELECT '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  ' || COALESCE(r.verdict,'?') || CASE WHEN r.head_sha<>p.head_sha THEN ' (behind)' ELSE '' END || '  ' || CAST((julianday('now') - julianday(r.finished_at)) * 24 AS INTEGER) || 'h ago  ' || COALESCE(p.title,'')
+          FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='staged' ORDER BY r.finished_at DESC;" | cut -c1-140 | grep . || echo "  (none)"
+  echo
+  echo "LAST 24H"
+  sql_ro "SELECT '  ' || substr(COALESCE(r.finished_at, r.started_at),12,5) || '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  ' || r.status || COALESCE(' ' || r.verdict, '') || COALESCE(' — ' || substr(r.error,1,60), '')
+          FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status IN ('staged','posted','failed','discarded') AND COALESCE(r.finished_at, r.started_at) > datetime('now','-1 day')
+          ORDER BY COALESCE(r.finished_at, r.started_at) DESC LIMIT 12;" | grep . || echo "  (nothing yet)"
+}
+cmd_watch() {
+  local once=0 interval=15
+  while [[ $# -gt 0 ]]; do case "$1" in --once) once=1; shift ;; --interval) interval="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac; done
+  if [[ "$once" == 1 ]]; then render_watch; return 0; fi
+  while true; do printf '\033[H\033[2J'; render_watch; echo; echo "(refresh ${interval}s · Ctrl-C to quit · prctl read <ref> / prctl post <ref>)"; sleep "$interval"; done
+}
+cmd_log() {  # follows while the review is running; plain dump once it has finished
+  local id log status follow=()
+  id="$(pr_id_or_die "$1")"
+  IFS='|' read -r log status < <(sql_ro "SELECT log_path, status FROM pr_reviews WHERE pr_id = $id AND log_path IS NOT NULL ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, id DESC LIMIT 1;") || true
+  [[ -n "${log:-}" && -f "$log" ]] || { echo "no review log for $(pr_ref_of_id "$id")" >&2; exit 1; }
+  [[ "$status" == running ]] && follow=(-f)
+  echo "== $log ($status) =="
+  tail -n +1 ${follow[@]+"${follow[@]}"} "$log" | jq --unbuffered -r '
+    if .type == "system" and .subtype == "init" then "[init] model " + (.model // "?") + " session " + (.session_id // "?")
+    elif .type == "assistant" then (.message.content[]? | if .type == "tool_use" then "→ " + .name + ": " + ((.input.description // .input.skill // .input.command // .input.prompt // .input.file_path // "") | tostring | gsub("\n"; " ") | .[0:160]) elif .type == "text" then "… " + (.text | gsub("\n"; " ") | .[0:200]) else empty end)
+    elif .type == "result" then "[result] " + (.subtype // "") + " · " + ((.result // "") | tostring | .[0:200])
+    else empty end' 2>/dev/null
+}
+cmd_history() {
+  local days=2
+  [[ "${1:-}" == "--days" ]] && days="${2:-2}"
+  sql_table "SELECT r.id, substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number AS ref, r.status, COALESCE(r.verdict,'') AS verdict, r.attempts,
+                    substr(COALESCE(r.started_at, r.queued_at),6,11) AS started, substr(COALESCE(r.finished_at,''),12,5) AS finished,
+                    CASE WHEN r.started_at IS NOT NULL AND r.finished_at IS NOT NULL THEN CAST((julianday(r.finished_at)-julianday(r.started_at))*1440 AS INTEGER)||'m' ELSE '' END AS took,
+                    COALESCE(substr(r.error,1,50),'') AS error
+             FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE COALESCE(r.finished_at, r.started_at, r.queued_at) > datetime('now', '-$days days')
+             ORDER BY r.id DESC;"
+}
+
 # ---------------------------------------------------------------- dispatch
 case "$cmd" in
   board)   cmd_board "$@" ;;
@@ -369,5 +439,8 @@ case "$cmd" in
   whoami)  cmd_whoami "$@" ;;
   label)   cmd_label "$@" ;;
   worker)  exec "$ROOT/scripts/pr-worker" "$@" ;;
+  watch)   cmd_watch "$@" ;;
+  log)     cmd_log "${1:?ref required}" ;;
+  history) cmd_history "$@" ;;
   *) usage; exit 1 ;;
 esac

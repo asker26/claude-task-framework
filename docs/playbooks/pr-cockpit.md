@@ -28,6 +28,16 @@ re-installs idempotently). They register every Claude session; nothing else to d
 | raw review-session logs | `.reviews/logs/<same>.log` (stream-json) |
 | worker | tmux `ctf-agents:pr-worker`; each review runs in `ctf-agents:review-<repo>-<n>` |
 
+## Live status
+
+```bash
+prctl watch                 # live dashboard (15s refresh): worker state, current review + its last action,
+                            # agents spawned, queue, staged reports, last-24h outcomes. --once for a snapshot.
+prctl log <ref>             # readable tail of the review session (follows while running): tools, agents, text
+prctl history [--days N]    # every run: status, verdict, attempts, how long it took, errors
+prctl worker status         # one-liner + queue/running rows
+```
+
 ## Three ways to drive it
 
 1. **Terminal**: `prctl board`, `prctl read <ref>`, `prctl post <ref>` …

@@ -12,7 +12,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in --review-id) review_id="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac
 done
 
-IFS='|' read -r repo number head_sha < <(sql_ro "SELECT repo, number, head_sha FROM prs WHERE id = $pr_id;")
+IFS='|' read -r repo number head_sha < <(sql_ro "SELECT repo, number, head_sha FROM prs WHERE id = $pr_id;") || true
 [[ -n "${repo:-}" ]] || { echo "unknown pr id $pr_id" >&2; exit 1; }
 short="$(pr_ref_short "$repo" "$number")"
 

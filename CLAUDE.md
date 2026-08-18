@@ -189,6 +189,7 @@ scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, h
 scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # tmux ctf-agents:pr-worker, one review at a time
+scripts/prctl watch [--once] | log <ref> | history [--days N]           # live dashboard · readable review stream · run outcomes
 scripts/prctl config set model claude-sonnet-5                  # or claude-opus-4-8 (worker model; subagents inherit); also max_diff, stale_*, ignore_repos, ignore_authors
 ```
 

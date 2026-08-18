@@ -301,6 +301,9 @@ db "INSERT INTO pr_reviews (pr_id, head_sha, status, heartbeat_at, started_at, a
 chk "stuck review reaped → failed:stuck"    "[[ \$(db \"SELECT status||':'||error||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) AND status='failed';\") == failed:stuck:1 ]]"
 chk "stuck review requeued once"            "[[ \$(db \"SELECT status||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) ORDER BY id DESC LIMIT 1;\") == queued:1 ]]"
 chk "worker status runs"                    "\"\$WORKER\" status | has 'worker: stopped'"
+chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
+chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"
+chk "prctl log prints readable stream"       "\"\$PRCTL\" log alpha#2 2>/dev/null | head -3 | has 'init'"
 chk "prctl worker delegates"                "\"\$PRCTL\" worker status | has 'worker: stopped'"
 unset FAKE_CLAUDE_MODE
 
