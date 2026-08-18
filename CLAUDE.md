@@ -191,7 +191,7 @@ scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # tmux ctf-agents:pr-worker, one review at a time
 scripts/prctl watch [--once] | log <ref> | history [--days N]           # live dashboard · readable review stream · run outcomes
 scripts/prctl serve [--bg] [--port N] | serve stop                        # local web UI (127.0.0.1:7787): board, live status, rendered reports, post/discard/skip buttons
-scripts/prctl config set model claude-sonnet-5                  # or claude-opus-4-8 (worker model; subagents inherit); also max_diff, stale_*, ignore_repos, ignore_authors
+scripts/prctl config set model claude-sonnet-5                  # or claude-opus-4-8 (worker model; subagents inherit); also max_reviews (default 1), max_diff, stale_*, ignore_repos, ignore_authors
 ```
 
 Statuses (view `pr_board`, first match wins): `running` → `staged` → `review-failed` → `skipped` → `re-review` (author pushed since my review) → `needs-review` → `author-replied` → `waiting-author` → `approved` (`ready ✓` when mergeable + green) → `commented`; drafts and my own PRs are separate. Flags: `STALE` (waiting-author > 3d or idle > 7d), `conflicts`, `ci-red`, `too-big` (> `max_diff` lines — manual review only), `s:<session>` claims.

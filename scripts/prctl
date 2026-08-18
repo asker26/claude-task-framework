@@ -21,7 +21,7 @@ usage: prctl <command> [args]
   watch [--once] [--interval N]                    live dashboard: worker, current review + last action, queue, staged, recent
   log <ref>                                        readable live tail of a running/finished review session
   history [--days N]                               review runs and outcomes (default 2 days)
-  config list | get <key> | set <key> <value>      keys: model (claude-sonnet-5|claude-opus-4-8) max_diff stale_author_days stale_days ignore_repos ignore_authors
+  config list | get <key> | set <key> <value>      keys: model (claude-sonnet-5|claude-opus-4-8) max_reviews max_diff stale_author_days stale_days ignore_repos ignore_authors
 ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
 EOF
 }
@@ -197,7 +197,7 @@ cmd_unskip() {
   echo "unskipped $(pr_ref_of_id "$id")"
 }
 cmd_config() {
-  local int_keys=" max_diff stale_author_days stale_days " str_keys=" ignore_repos ignore_authors model "
+  local int_keys=" max_diff stale_author_days stale_days max_reviews " str_keys=" ignore_repos ignore_authors model "
   case "${1:-list}" in
     list) sql_table "SELECT key, value, updated_at FROM pr_settings ORDER BY key;" ;;
     get)  setting_get "$2"; echo ;;

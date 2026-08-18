@@ -8,7 +8,7 @@ require_db
 
 POLL="${CTF_PR_POLL:-60}"
 SYNC_INTERVAL="${CTF_PR_SYNC_INTERVAL:-300}"
-MAX_REVIEWS="${CTF_PR_MAX_REVIEWS:-1}"
+MAX_REVIEWS="${CTF_PR_MAX_REVIEWS:-$(setting_get max_reviews)}"; MAX_REVIEWS="${MAX_REVIEWS:-1}"
 STUCK_MIN="${CTF_PR_STUCK_TIMEOUT:-30}"
 
 cmd="${1:-status}"; [[ $# -gt 0 ]] && shift

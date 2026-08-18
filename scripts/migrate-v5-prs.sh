@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS pr_settings (
     value TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-INSERT OR IGNORE INTO pr_settings (key, value) VALUES ('max_diff', '3000'), ('stale_author_days', '3'), ('stale_days', '7'), ('model', 'claude-sonnet-5');
+INSERT OR IGNORE INTO pr_settings (key, value) VALUES ('max_diff', '3000'), ('stale_author_days', '3'), ('stale_days', '7'), ('model', 'claude-sonnet-5'), ('max_reviews', '1');
 
 DROP VIEW IF EXISTS pr_board;
 CREATE VIEW pr_board AS
