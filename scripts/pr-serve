@@ -72,9 +72,9 @@ def worker_state():
     if until and scalar("SELECT datetime('now') < ?", (until,)):
         return f"cooldown until {until[11:16]} UTC (session cap)"
     run = rows("SELECT p.repo, p.number, CAST((julianday('now') - julianday(r.started_at)) * 1440 AS INTEGER) AS mins "
-               "FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'running' ORDER BY r.started_at LIMIT 1")
+               "FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'running' ORDER BY r.started_at")
     if run:
-        return f"reviewing {short_ref(run[0]['repo'], run[0]['number'])} ({run[0]['mins']}m)"
+        return "reviewing " + ", ".join(f"{short_ref(x['repo'], x['number'])} ({x['mins']}m)" for x in run)
     mode = setting("worker_mode")
     return f"idle ({mode})" if mode in ("sync-only", "queue-only") else "idle"
 

@@ -113,8 +113,8 @@ worker_state_text() {
   if [[ -n "$until" && "$(sql_ro "SELECT datetime('now') < '$until';")" == 1 ]]; then
     printf 'cooldown until %s (session cap)' "$(utc_to_local_hm "$until")"; return 0
   fi
-  run="$(sql_ro "SELECT substr(p.repo, instr(p.repo,'/')+1) || '#' || p.number || ' (' || CAST((julianday('now') - julianday(r.started_at)) * 1440 AS INTEGER) || 'm)'
-                 FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'running' ORDER BY r.started_at LIMIT 1;")"
+  run="$(sql_ro "SELECT group_concat(substr(p.repo, instr(p.repo,'/')+1) || '#' || p.number || ' (' || CAST((julianday('now') - julianday(r.started_at)) * 1440 AS INTEGER) || 'm)', ', ')
+                 FROM (SELECT * FROM pr_reviews WHERE status = 'running' ORDER BY started_at) r JOIN prs p ON p.id = r.pr_id;")"
   local mode; mode="$(setting_get worker_mode)"
   if [[ -n "$run" ]]; then printf 'reviewing %s' "$run"
   elif [[ "$mode" == sync-only || "$mode" == queue-only ]]; then printf 'idle (%s)' "$mode"

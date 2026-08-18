@@ -366,16 +366,16 @@ stream_agents() { grep -c '"name":"Agent"' "$1" 2>/dev/null || true; }
 render_watch() {
   echo "$PR_ORG PR cockpit · $(date '+%H:%M:%S') · synced $(sql_ro "SELECT CAST((julianday('now') - julianday(COALESCE((SELECT value FROM pr_settings WHERE key='last_sync_at'), '2000-01-01'))) * 1440 AS INTEGER);")m ago · worker: $(worker_state_text)"
   echo
-  local rid ref model started hb log elapsed
-  IFS='|' read -r rid ref started hb log < <(sql_ro "SELECT r.id, substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number, r.started_at, r.heartbeat_at, COALESCE(r.log_path,'')
-                                              FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='running' ORDER BY r.started_at LIMIT 1;") || true
-  if [[ -n "${rid:-}" ]]; then
+  local rid ref started hb log elapsed any=0
+  while IFS='|' read -r rid ref started hb log; do
+    [[ -n "${rid:-}" ]] || continue
+    any=1
     elapsed="$(sql_ro "SELECT CAST((julianday('now') - julianday('$started')) * 1440 AS INTEGER);")"
     echo "RUNNING  $ref · ${elapsed}m · review $rid · agents spawned: $(stream_agents "$log") · last heartbeat $(sql_ro "SELECT CAST((julianday('now') - julianday('$hb')) * 86400 AS INTEGER);")s ago"
     echo "         $(stream_activity "$log")"
-  else
-    echo "RUNNING  —"
-  fi
+  done < <(sql_ro "SELECT r.id, substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number, r.started_at, r.heartbeat_at, COALESCE(r.log_path,'')
+                   FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='running' ORDER BY r.started_at;")
+  [[ "$any" == 1 ]] || echo "RUNNING  —"
   echo
   echo "QUEUE"
   sql_ro "SELECT '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  (queued ' || CAST((julianday('now') - julianday(r.queued_at)) * 1440 AS INTEGER) || 'm ago' || CASE WHEN r.attempts > 0 THEN ', attempt ' || (r.attempts+1) ELSE '' END || ')'
