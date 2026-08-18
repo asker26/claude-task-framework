@@ -6,13 +6,13 @@ import { cn } from '@/lib/utils'
 export function StagedTable({ staged, sel, open }: { staged: StagedRow[]; sel: string | null; open: (ref: string) => void }) {
   if (!staged.length) return <div className="text-xs text-muted-foreground">nothing staged</div>
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-lg border border-border bg-card">
       <table className="w-full border-collapse">
         <tbody>
           {staged.map(s => (
             <tr key={s.id} onClick={() => open(s.ref)}
-                className={cn('cursor-pointer border-b border-border hover:bg-muted/60', sel === s.ref && 'bg-primary/10')}>
-              <td className="whitespace-nowrap py-1 pr-2 font-mono text-primary">{s.ref} <GhLink url={s.url} /></td>
+                className={cn('cursor-pointer border-b border-border last:border-0 transition-colors hover:bg-muted/50', sel === s.ref && 'bg-primary/10')}>
+              <td className="whitespace-nowrap px-3 py-1.5 font-mono text-primary">{s.ref} <GhLink url={s.url} /></td>
               <td className="whitespace-nowrap py-1 pr-2">{verdictBadge(s.verdict)}{s.behind ? <span className="ml-1 text-xs text-warn">(behind)</span> : null}</td>
               <td className="whitespace-nowrap py-1 pr-2 text-xs text-muted-foreground">{s.mins_ago}m ago</td>
               <td className="py-1 pr-2 text-xs"><Size r={s} /></td>

@@ -5,13 +5,12 @@ import { Select } from '@/components/ui/select'
 import { CheckboxLabel } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { getLog, getReport, winName, type Report } from '@/lib/api'
-import { runAction, takeOver, workOn, queueReview } from '@/lib/actions'
-import { useToast } from '@/lib/toast'
+import { useActions } from '@/lib/actions'
 
 export function ReportView({ refId, full, onClose, refresh }: {
   refId: string; full?: boolean; onClose?: () => void; refresh?: () => void
 }) {
-  const toast = useToast()
+  const A = useActions()
   const [r, setR] = useState<Report | null>(null)
   const [view, setView] = useState<string | undefined>(undefined)
   const [log, setLog] = useState<string | null>(null)
@@ -47,13 +46,18 @@ export function ReportView({ refId, full, onClose, refresh }: {
         const b = document.createElement('button')
         b.textContent = '→ Jira'
         b.className = 'h-6 px-2 text-xs rounded border border-border bg-card hover:border-primary/60 cursor-pointer whitespace-nowrap'
-        b.onclick = ev => {
+        b.onclick = async ev => {
           ev.stopPropagation()
           const find = (td[fi]?.textContent ?? '').trim()
           const file = fl >= 0 ? (td[fl]?.textContent ?? '').trim() : ''
-          const t0 = prompt('Jira summary:', `[${refId}] ${find.slice(0, 120).replace(/\s+/g, ' ')}`)
+          const t0 = await A.promptDlg({
+            title: 'Create a Jira work item',
+            description: file ? `From this finding · ${file.slice(0, 80)}` : 'From this finding',
+            defaultValue: `[${refId}] ${find.slice(0, 120).replace(/\s+/g, ' ')}`,
+            submitText: 'Create ticket',
+          })
           if (!t0) return
-          void runAction(toast, { action: 'ticket', ref: refId, title: t0, body: (file ? `File: ${file}\n\n` : '') + find }, () => void load(view))
+          void A.run({ action: 'ticket', ref: refId, title: t0, body: (file ? `File: ${file}\n\n` : '') + find }, () => void load(view))
         }
         const c = document.createElement('td')
         c.appendChild(b)
@@ -96,7 +100,7 @@ export function ReportView({ refId, full, onClose, refresh }: {
       )}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {r.error ? (
-          <Button variant="default" size="sm" onClick={() => queueReview(toast, refId, refresh)}>queue review</Button>
+          <Button variant="default" size="sm" onClick={() => void A.queueReview(refId, refresh)}>queue review</Button>
         ) : (
           <>
             {canPost && (
@@ -111,28 +115,28 @@ export function ReportView({ refId, full, onClose, refresh }: {
                 </label>
                 <CheckboxLabel label="full report" checked={fullReport} onChange={e => setFullReport(e.target.checked)} />
                 {r.has_optimized && <CheckboxLabel label="post optimized" checked={postOpt} onChange={e => setPostOpt(e.target.checked)} />}
-                <Button variant="default" size="sm" onClick={() => {
-                  if (!confirm('Post this review to GitHub under your account?')) return
-                  void runAction(toast, { action: 'post', ref: refId, verdict: verdict || undefined, full: fullReport, optimized: r.has_optimized && postOpt }, reload)
+                <Button variant="default" size="sm" onClick={async () => {
+                  if (!await A.confirmDlg({ title: 'Post this review to GitHub?', body: 'It is published under your account.', confirmText: 'Post review' })) return
+                  void A.run({ action: 'post', ref: refId, verdict: verdict || undefined, full: fullReport, optimized: r.has_optimized && postOpt }, reload)
                 }}>Post to GitHub</Button>
-                <Button variant="destructive" size="sm" onClick={() => { if (confirm('Discard this report?')) void runAction(toast, { action: 'discard', ref: refId }, reload) }}>Discard</Button>
+                <Button variant="destructive" size="sm" onClick={async () => { if (await A.confirmDlg({ title: 'Discard this report?', destructive: true, confirmText: 'Discard' })) void A.run({ action: 'discard', ref: refId }, reload) }}>Discard</Button>
               </>
             )}
             {r.has_optimized
               ? <>
                   <Button size="sm" onClick={() => void load(r.view === 'optimized' ? 'original' : 'optimized')}>view {r.view === 'optimized' ? 'original' : 'optimized'}</Button>
-                  <Button size="sm" onClick={() => void runAction(toast, { action: 'optimize', ref: refId }, reload)}>Re-optimize</Button>
+                  <Button size="sm" onClick={() => void A.run({ action: 'optimize', ref: refId }, reload)}>Re-optimize</Button>
                 </>
-              : <Button size="sm" onClick={() => void runAction(toast, { action: 'optimize', ref: refId }, reload)}>Optimize</Button>}
-            <Button size="sm" onClick={() => void runAction(toast, { action: 'review', ref: refId }, refresh)}>Re-review</Button>
+              : <Button size="sm" onClick={() => void A.run({ action: 'optimize', ref: refId }, reload)}>Optimize</Button>}
+            <Button size="sm" onClick={() => void A.run({ action: 'review', ref: refId }, refresh)}>Re-review</Button>
           </>
         )}
         <Button size="sm" onClick={async () => setLog(await getLog(refId))}>Session log</Button>
         {!full && <a href={`/report?ref=${encodeURIComponent(refId)}`} target="_blank" rel="noreferrer"><Button size="sm">Full page ↗</Button></a>}
-        <Button variant="destructive" size="sm" onClick={() => { if (confirm(`Merge ${refId} on GitHub${admin ? ' (admin)' : ''}?`)) void runAction(toast, { action: 'merge', ref: refId, admin }, refresh ?? reload) }}>Merge PR</Button>
+        <Button variant="destructive" size="sm" onClick={async () => { if (await A.confirmDlg({ title: `Merge ${refId} on GitHub${admin ? ' (admin)' : ''}?`, body: 'Merges with the configured method and deletes the head branch (protected branches kept).', confirmText: 'Merge', destructive: true })) void A.run({ action: 'merge', ref: refId, admin }, refresh ?? reload) }}>Merge PR</Button>
         <CheckboxLabel label="admin" checked={admin} onChange={e => setAdmin(e.target.checked)} />
-        <Button size="sm" onClick={() => takeOver(toast, refId, refresh)}>Take over</Button>
-        <Button size="sm" onClick={() => workOn(toast, refId, refresh)}>Work on it</Button>
+        <Button size="sm" onClick={() => void A.takeOver(refId, refresh)}>Take over</Button>
+        <Button size="sm" onClick={() => void A.workOn(refId, refresh)}>Work on it</Button>
         <a href={`/term?win=${winName('work', refId)}`} target="_blank" rel="noreferrer"><Button size="sm">web term</Button></a>
         {onClose && <Button size="sm" onClick={onClose}>Close</Button>}
         {full && <a href="/"><Button size="sm">back to cockpit</Button></a>}

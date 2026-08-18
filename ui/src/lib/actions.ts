@@ -1,28 +1,52 @@
 import { act } from './api'
-import type { useToast } from './toast'
+import { useToast } from './toast'
+import { useDialogs } from '@/components/ui/dialog'
 
-type Toast = ReturnType<typeof useToast>
+export function useActions() {
+  const toast = useToast()
+  const { confirmDlg, promptDlg } = useDialogs()
 
-export async function runAction(toast: Toast, payload: Record<string, unknown>, refresh?: () => void) {
-  toast(`… ${payload.action}${payload.ref ? ` ${payload.ref}` : ''}`)
-  const r = await act(payload)
-  toast(`${r.ok ? '✓' : '✗'} ${r.output}`)
-  refresh?.()
-  return r
-}
+  const run = async (payload: Record<string, unknown>, refresh?: () => void) => {
+    toast(`… ${payload.action}${payload.ref ? ` ${payload.ref}` : ''}`)
+    const r = await act(payload)
+    toast(`${r.ok ? '✓' : '✗'} ${r.output}`)
+    refresh?.()
+    return r
+  }
 
-export function queueReview(toast: Toast, ref: string, refresh?: () => void) {
-  const n = prompt('Directions for the reviewer (optional — e.g. "focus on the payment flow, ignore CSS")', '')
-  if (n === null) return
-  void runAction(toast, { action: 'review', ref, notes: n || undefined }, refresh)
-}
-export function takeOver(toast: Toast, ref: string, refresh?: () => void) {
-  const n = prompt('Initial directions for your interactive session (optional)', '')
-  if (n === null) return
-  void runAction(toast, { action: 'takeover', ref, notes: n || undefined }, refresh)
-}
-export function workOn(toast: Toast, ref: string, refresh?: () => void) {
-  const n = prompt('What do you want to do on this PR? (optional — e.g. "fix findings 1 and 3")', '')
-  if (n === null) return
-  void runAction(toast, { action: 'work', ref, notes: n || undefined }, refresh)
+  return {
+    run,
+    confirmDlg,
+    promptDlg,
+    queueReview: async (ref: string, refresh?: () => void) => {
+      const n = await promptDlg({
+        title: `Queue review — ${ref}`,
+        description: 'Directions for the reviewer (optional). They override the default review focus.',
+        placeholder: 'e.g. focus on the payment flow, ignore CSS',
+        optional: true,
+      })
+      if (n === null) return
+      void run({ action: 'review', ref, notes: n || undefined }, refresh)
+    },
+    takeOver: async (ref: string, refresh?: () => void) => {
+      const n = await promptDlg({
+        title: `Take over the review — ${ref}`,
+        description: 'Opens an interactive session (tmux + Terminal) running reviewer-ultra that follows your directions.',
+        placeholder: 'initial directions (optional)',
+        optional: true,
+      })
+      if (n === null) return
+      void run({ action: 'takeover', ref, notes: n || undefined }, refresh)
+    },
+    workOn: async (ref: string, refresh?: () => void) => {
+      const n = await promptDlg({
+        title: `Work on ${ref}`,
+        description: 'Opens an interactive session on the PR branch in a dedicated worktree.',
+        placeholder: 'e.g. fix findings 1 and 3, rename the endpoint',
+        optional: true,
+      })
+      if (n === null) return
+      void run({ action: 'work', ref, notes: n || undefined }, refresh)
+    },
+  }
 }

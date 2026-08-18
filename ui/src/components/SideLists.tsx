@@ -1,11 +1,10 @@
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { runAction } from '@/lib/actions'
-import { useToast } from '@/lib/toast'
+import { useActions } from '@/lib/actions'
 import type { HistoryRow, QueueRow, SessionRow } from '@/lib/api'
 
 export function QueueList({ queue, refresh }: { queue: QueueRow[]; refresh: () => void }) {
-  const toast = useToast()
+  const A = useActions()
   if (!queue.length) return <div className="text-xs text-muted-foreground">(empty)</div>
   return (
     <div className="space-y-1">
@@ -13,7 +12,7 @@ export function QueueList({ queue, refresh }: { queue: QueueRow[]; refresh: () =
         <div key={q.id} className="flex items-center gap-2 text-sm">
           <span className="font-mono text-primary">{q.ref}</span>
           <span className="text-xs text-muted-foreground">queued {q.mins}m ago{q.attempts ? ` · attempt ${q.attempts + 1}` : ''}</span>
-          <Button size="sm" onClick={() => void runAction(toast, { action: 'discard', ref: q.ref, reason: 'dequeued from UI' }, refresh)}>dequeue</Button>
+          <Button size="sm" onClick={() => void A.run({ action: 'discard', ref: q.ref, reason: 'dequeued from UI' }, refresh)}>dequeue</Button>
         </div>
       ))}
     </div>
