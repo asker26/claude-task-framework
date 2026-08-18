@@ -92,7 +92,8 @@ the report was written — post it anyway or `prctl review <ref>` again.
 
 `prctl merge <ref>` (or the **Merge PR** button — with an *admin* checkbox for branch-protection overrides)
 merges on GitHub using `config merge_method` (default squash; `--method`, `--admin` on the CLI). It refuses
-drafts, warns on conflicts/red CI, and always confirms. The APPROVED/MINE board rows show a merge button when
+drafts, warns on conflicts/red CI, always confirms, and **deletes the head branch** afterwards — unless the
+head is main/master/develop(ment)/release* or you pass `--keep-branch`. The APPROVED/MINE board rows show a merge button when
 `ready ✓`.
 
 The worker's review prompt enforces the severity bar: a numbered finding must name a user action or code path
