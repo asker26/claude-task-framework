@@ -225,6 +225,7 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 - **Scripts**: `scripts/` — agent system, taskctl CLI, integrations (Discord, Jira, GSC)
 - **Hooks**: `hooks/` — session-start (focus injection), pr-session-start/seen/end (PR cockpit session registry)
 - **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`, `/efnpm` — explain a topic for a non-technical PM), plus team-lead, docs-lookup, isolate-workspace, ctf-clean (`/ctf-clean` workspace janitor), appstoreconnect, the ASO suite, and the review pair: `/reviewer-ultra` (multi-agent PR review: regressions/bugs/smells + validators) and `/readable-ultra` (readability-only review distilled from Clean Code / The Art of Readable Code; composes with reviewer-ultra as a 4th finder). The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
+- **UI**: `ui/` — React + TS + Tailwind v4 + shadcn-style components (Vite). Built `ui/dist` is committed so `prctl serve` needs no Node; rebuild with `cd ui && npm run build` after UI changes.
 - **Templates**: `templates/` — Discord embed templates (pr_review, jira_status, seo_monitor)
 - **Workflows**: `scripts/workflows/` — blog-image-gen, gsc-audit
 
@@ -250,7 +251,7 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 | `migrate-v5-prs.sh` | Idempotent migration: PR cockpit tables + `pr_board` view (always recreated) |
 | `install-pr-hooks.sh` | Appends the three PR session hooks to `~/.claude/settings.json` (idempotent, backup) |
 | `test-prctl` | Offline integration test for the whole PR cockpit (fake `gh` + `claude` shims) |
-| `pr-serve` | Local web UI for the PR cockpit (Python stdlib, 127.0.0.1 only); reads `tasks.db`, mutates only via `prctl` |
+| `pr-serve` | Local web UI server (Python stdlib, 127.0.0.1 only): JSON API + serves the React app from `ui/dist`; reads `tasks.db`, mutates only via `prctl` |
 
 ## Conventions
 

@@ -126,6 +126,9 @@ and the reaper stages a finished report it finds instead of re-running (`error: 
 
 ## Web terminal & Jira tickets
 
+- The UI is a React + TypeScript + Tailwind + shadcn-style app in `ui/` (Vite). `prctl serve` serves the
+  committed build from `ui/dist` — no Node needed to run it. To change the UI: `cd ui && npm install &&
+  npm run dev` (proxies /api to :7787), then `npm run build` and commit `dist/`.
 - `/term` (linked as **web term** on running cards and report pages) mirrors any tmux window of the cockpit
   session in the browser — watch what Claude does live and type to it (input box + Esc/Ctrl-C keys). Your
   interactive sessions are the `take-*` / `work-*` windows; `review-*` are the headless runs.
