@@ -132,6 +132,8 @@ and the reaper stages a finished report it finds instead of re-running (`error: 
 - **→ Jira** next to every finding row in a report creates a BOOKNETIC work item from it (via `acli`;
   the summary is editable in the prompt, the body carries file:line + finding + PR link). CLI:
   `prctl ticket <ref> --title "…" [--body "…"]` — the Jira project comes from the org's `jira_project_key`.
+  Created tickets are saved (`pr_tickets`) and shown as links on the PR's report card; `prctl tickets`
+  lists them all, `prctl show <ref>` includes the PR's own.
 
 ## Sessions and claims
 

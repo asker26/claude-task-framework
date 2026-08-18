@@ -179,6 +179,7 @@ def report(ref, view=""):
             return {"error": "unknown PR"}
         pr = pr[0]
         pr["ref"] = short_ref(pr["repo"], pr["number"])
+        pr["tickets"] = rows("SELECT jira_key, title, url, created_at FROM pr_tickets WHERE pr_id = (SELECT id FROM prs WHERE repo = ? COLLATE NOCASE AND number = ?) ORDER BY id DESC", (repo, int(m.group(3))))
         return {"error": "no report", **pr}
     r = r[0]
     try:
@@ -186,6 +187,7 @@ def report(ref, view=""):
             md = f.read()
     except OSError:
         return {"error": "report file missing", **r}
+    r["tickets"] = rows("SELECT jira_key, title, url, created_at FROM pr_tickets WHERE pr_id = (SELECT id FROM prs WHERE repo = ? COLLATE NOCASE AND number = ?) ORDER BY id DESC", (repo, int(m.group(3))))
     opt_path = r["report_path"][:-3] + "-opt.md"
     r["has_optimized"] = os.path.exists(opt_path)
     r["view"] = "original"
@@ -386,10 +388,12 @@ async function load(){try{S=await (await fetch('/api/state')).json();render()}ca
 function closeReport(){sel=null;document.querySelector('main').classList.remove('split');render()}
 async function openReport(ref,view){sel=ref;render();document.querySelector('main').classList.add('split');const r=await (await fetch('/api/report?ref='+encodeURIComponent(ref)+(view?'&view='+view:''))).json();const el=document.getElementById('report');
  if(r.error){el.innerHTML=`<div class="card"><b>${esc(ref)}</b>${r.url?` · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'open on GitHub')} ↗</a>`:''}${r.author?` · ${esc(r.author)}`:''}${r.status?` · <span class="status st-${esc(r.status)}">${esc(r.status)}</span>`:''}<br><span class="small">${esc(r.error)}</span>
+ ${(r.tickets&&r.tickets.length)?`<div class="small">Jira: ${r.tickets.map(t=>`<a href="${esc(t.url||'#')}" target="_blank" style="color:var(--acc)">${esc(t.jira_key)}</a>`).join(' · ')}</div>`:''}
  <div class="actions"><button class="primary" onclick="queueReview('${ref}')">queue review</button> <button onclick="takeOver('${ref}')">take over</button> <button onclick="workOn('${ref}')">work on it</button> <a href="/term?win=work-${ref.replace(/[.#]/g,'-')}" target="_blank"><button>web term</button></a> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
  const canPost=r.status==='staged';const v=r.verdict||'';
  el.innerHTML=`<div class="card"><b>${esc(r.ref)}</b> · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'')}</a> · ${esc(r.author||'')}<br>
  <span class="small">review ${r.id} · ${esc(r.status)} · verdict <b>${esc(v||'unparsed')}</b> · reviewed ${esc((r.head_sha||'').slice(0,7))}${r.behind?' <span class="tag stale">behind head '+esc((r.pr_head||'').slice(0,7))+'</span>':''}${r.has_optimized?' · viewing <b>'+r.view+'</b>':''} · ${esc((r.finished_at||''))}</span>
+ ${(r.tickets&&r.tickets.length)?`<div class="small">Jira: ${r.tickets.map(t=>`<a href="${esc(t.url||'#')}" target="_blank" style="color:var(--acc)">${esc(t.jira_key)}</a> <span class="dim">${esc((t.title||'').slice(0,60))}</span>`).join(' · ')}</div>`:''}
  <div class="actions">${canPost?`<label class="small">post as <select id="vsel"><option value="">${esc(v||'unparsed → comment')}</option><option value="A">approve</option><option value="RC">request changes</option><option value="C">comment</option></select></label>
  <label class="small"><input type="checkbox" id="vfull"> full report</label>
  ${r.has_optimized?`<label class="small"><input type="checkbox" id="vopt" ${r.view==='optimized'?'checked':''}> post optimized</label>`:''}
@@ -468,8 +472,13 @@ def report_page(ref, view=""):
                     '<button onclick="takeOver()">Take over</button> <button onclick="workOn()">Work on it</button> '
                     f'<a href="/term?win=work-{html.escape(ref.split("/")[-1].replace("#","-").replace(".","-"))}" target="_blank"><button>web term</button></a> <a href="/"><button>back to cockpit</button></a>')
         viewing = f' · viewing <b>{r["view"]}</b>' if r.get("has_optimized") else ""
+        tick_html = ""
+        if r.get("tickets"):
+            links = " · ".join(f'<a href="{html.escape(t.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(t["jira_key"])}</a> <span class="dim">{html.escape((t.get("title") or "")[:60])}</span>' for t in r["tickets"])
+            tick_html = f'<div class="small">Jira: {links}</div>' 
         card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
                 f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind}{viewing} · {html.escape(r.get("finished_at") or "")}</span>'
+                f'{tick_html}'
                 f'<div class="actions">{actions}</div></div>')
         body = r["html"]
     return (REPORT_PAGE.replace("__CSS__", CSS).replace("__TITLE__", html.escape(f"{ref} · report"))

@@ -76,6 +76,14 @@ CREATE TABLE IF NOT EXISTS pr_claims (
 );
 CREATE INDEX IF NOT EXISTS idx_pr_claims_open ON pr_claims(pr_id, released_at);
 
+CREATE TABLE IF NOT EXISTS pr_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pr_id INTEGER NOT NULL REFERENCES prs(id),
+    jira_key TEXT NOT NULL,
+    title TEXT, url TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS pr_settings (
     key TEXT PRIMARY KEY,
     value TEXT,

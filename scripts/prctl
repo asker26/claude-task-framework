@@ -19,6 +19,7 @@ usage: prctl <command> [args]
   discard <ref> [--reason T]
   merge <ref> [--method merge|squash|rebase] [--admin] [--keep-branch] [--yes]   merge on GitHub + delete the head branch (kept for main/master/develop*/release*)
   ticket <ref> --title "…" [--body "…"]            create a Jira work item from a review finding (org's project, e.g. BOOKNETIC)
+  tickets                                          list work items created from reviews (key, PR, link)
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
@@ -137,6 +138,8 @@ cmd_show() {
   fi
   echo; echo "reviews:"
   sql_table "SELECT id, status, verdict, substr(head_sha, 1, 7) AS sha, attempts, queued_at, finished_at, posted_at, error FROM pr_reviews WHERE pr_id = $id ORDER BY id DESC;"
+  echo; echo "tickets:"
+  sql_table "SELECT jira_key, title, url, created_at FROM pr_tickets WHERE pr_id = $id ORDER BY id DESC;" 2>/dev/null || true
   echo; echo "claims:"
   sql_table "SELECT COALESCE(s.label, substr(s.id, 1, 8)) AS session, s.kind, s.repo, c.note, c.claimed_at
              FROM pr_claims c JOIN sessions s ON s.id = c.session_id WHERE c.pr_id = $id AND c.released_at IS NULL;"
@@ -333,7 +336,17 @@ cmd_ticket() {
 
 Source: review of PR $(pr_ref_short "$repo" "$num") — $url" 2>&1)" || { echo "acli failed: $out" >&2; exit 1; }
   key="$(printf '%s' "$out" | LC_ALL=C grep -oE "$jkey-[0-9]+" | /usr/bin/head -1)"
-  echo "created ${key:-work item}${jinstance:+ · ${jinstance%/}/browse/$key}"
+  local jurl=""
+  if [[ -n "$key" && -n "$jinstance" ]]; then
+    jurl="${jinstance%/}/browse/$key"
+    [[ "$jurl" == http* ]] || jurl="https://$jurl"
+  fi
+  [[ -n "$key" ]] && sql "INSERT INTO pr_tickets (pr_id, jira_key, title, url) VALUES ($id, $(sql_str "$key"), $(sql_str "$title"), $(sql_str "$jurl"));"
+  echo "created ${key:-work item}${jurl:+ · $jurl}"
+}
+cmd_tickets() {
+  sql_table "SELECT t.jira_key, substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number AS ref, t.title, t.url, t.created_at
+             FROM pr_tickets t JOIN prs p ON p.id = t.pr_id ORDER BY t.id DESC LIMIT 40;"
 }
 
 # ---------------------------------------------------------------- skip / config
@@ -615,6 +628,7 @@ case "$cmd" in
   discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
   merge)   cmd_merge "${1:?ref required}" "${@:2}" ;;
   ticket)  cmd_ticket "${1:?ref required}" "${@:2}" ;;
+  tickets) cmd_tickets ;;
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
   unskip)  cmd_unskip "${1:?ref required}" ;;
   config)  cmd_config "$@" ;;

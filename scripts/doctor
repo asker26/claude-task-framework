@@ -41,7 +41,7 @@ if [[ -f "$DB" ]]; then
   check "table: sprints" "sqlite3 '$DB' \"SELECT 1 FROM sprints LIMIT 0;\"" optional
   check "column: tasks.sprint_id" "sqlite3 '$DB' \"SELECT sprint_id FROM tasks LIMIT 0;\"" optional
   # PR cockpit tables + view are optional (v5+; run scripts/migrate-v5-prs.sh)
-  for table in prs pr_reviews sessions pr_claims pr_settings; do
+  for table in prs pr_reviews sessions pr_claims pr_settings pr_tickets; do
     check "table: $table" "sqlite3 '$DB' \"SELECT 1 FROM $table LIMIT 0;\"" optional
   done
   check "view: pr_board" "sqlite3 '$DB' \"SELECT 1 FROM pr_board LIMIT 0;\"" optional
