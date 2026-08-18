@@ -187,6 +187,7 @@ scripts/prctl review bookneticsaas#3128 [--now] [--notes "…"]   # queue for th
 scripts/prctl abort <ref> | takeover <ref> | work <ref> [--notes "…"]  # kill a running review / interactive review session / interactive session ON the PR branch (worktree)
 scripts/prctl staged | read <ref> | edit <ref> | optimize <ref>   # optimize = compact report (verdict+findings only) → -opt.md; post --optimized
 scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, human-approved, under your account
+scripts/prctl ticket <ref> --title "…" [--body "…"]              # Jira work item from a finding (org's project key; UI: → Jira per finding row)
 scripts/prctl merge <ref> [--method merge|squash|rebase] [--admin] [--keep-branch]  # human-confirmed merge; deletes head branch (kept for main/master/develop*/release*)
 scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions

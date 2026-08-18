@@ -18,6 +18,7 @@ usage: prctl <command> [args]
   post <ref> [--verdict A|RC|C] [--full|--optimized] [--yes] [--force]
   discard <ref> [--reason T]
   merge <ref> [--method merge|squash|rebase] [--admin] [--keep-branch] [--yes]   merge on GitHub + delete the head branch (kept for main/master/develop*/release*)
+  ticket <ref> --title "…" [--body "…"]            create a Jira work item from a review finding (org's project, e.g. BOOKNETIC)
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
@@ -110,7 +111,7 @@ cmd_board() {
   last="$(setting_get last_sync_at)"; age="?"
   [[ -n "$last" ]] && age="$(sql_ro "SELECT CAST((julianday('now') - julianday('$last')) * 1440 AS INTEGER);")"
   echo "$PR_ORG PRs · synced ${age}m ago · worker: $(worker_state_text)"
-  section "NEEDS YOU"         "status IN ('running','staged','review-failed','re-review','author-replied','needs-review')" "$where"
+  section "NEEDS YOU"         "status IN ('staged','review-failed','re-review','author-replied','needs-review')" "$where"
   section "WAITING ON AUTHOR" "status IN ('waiting-author','commented')" "$where"
   section "APPROVED"          "status = 'approved'" "$where"
   section "MINE"              "status = 'mine'" "$where"
@@ -180,7 +181,7 @@ cmd_takeover() {
   [[ "${1:-}" == "--notes" ]] && notes="${2:-}"
   IFS='|' read -r repo num < <(sql_ro "SELECT repo, number FROM prs WHERE id = $id;")
   dir="$(resolve_work_dir "$repo")"
-  win="take-${repo#*/}-$num"
+  win="take-${repo#*/}-$num"; win="${win//./-}"
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$dir" \
@@ -303,7 +304,7 @@ cmd_work() {
   fi
   [[ -n "$rpath" && -f "$rpath" ]] && prompt="$prompt The staged review report is at $rpath — read it before changing anything."
   prompt="$prompt The lead will direct you (fix findings, change code, answer questions). Never merge, post reviews, or push without an explicit go.${notes:+ Initial directions: $notes}"
-  win="work-${repo#*/}-$num"
+  win="work-${repo#*/}-$num"; win="${win//./-}"
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$cwd" \
@@ -313,6 +314,26 @@ cmd_work() {
     osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
   fi
   echo "work session in tmux $TMUX_SESSION:$win · cwd $cwd${wt:+ (worktree on $head_ref — remove later: git -C $dir worktree remove $wt)}"
+}
+
+cmd_ticket() {
+  local id title="" body="" repo num url jkey jinstance out key
+  id="$(pr_id_or_die "$1")"; shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --title) title="$2"; shift 2 ;; --body) body="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac
+  done
+  [[ -n "$title" ]] || { echo "--title required" >&2; exit 1; }
+  command -v acli >/dev/null 2>&1 || { echo "acli not installed" >&2; exit 1; }
+  IFS='|' read -r repo num url < <(sql_ro "SELECT repo, number, COALESCE(url,'') FROM prs WHERE id = $id;")
+  jkey="${CTF_JIRA_PROJECT:-$(sql_ro "SELECT COALESCE(jira_project_key,'') FROM organizations WHERE name = $(sql_str "${repo%%/*}") LIMIT 1;" 2>/dev/null || true)}"
+  jkey="${jkey:-BOOKNETIC}"
+  jinstance="$(sql_ro "SELECT COALESCE(jira_instance,'') FROM organizations WHERE name = $(sql_str "${repo%%/*}") LIMIT 1;" 2>/dev/null || true)"
+  out="$(acli jira workitem create --project "$jkey" --type "Task" --summary "$title" \
+        --description "$body
+
+Source: review of PR $(pr_ref_short "$repo" "$num") — $url" 2>&1)" || { echo "acli failed: $out" >&2; exit 1; }
+  key="$(printf '%s' "$out" | LC_ALL=C grep -oE "$jkey-[0-9]+" | /usr/bin/head -1)"
+  echo "created ${key:-work item}${jinstance:+ · ${jinstance%/}/browse/$key}"
 }
 
 # ---------------------------------------------------------------- skip / config
@@ -593,6 +614,7 @@ case "$cmd" in
   edit)    cmd_edit "${1:?ref required}" ;;
   discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
   merge)   cmd_merge "${1:?ref required}" "${@:2}" ;;
+  ticket)  cmd_ticket "${1:?ref required}" "${@:2}" ;;
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
   unskip)  cmd_unskip "${1:?ref required}" ;;
   config)  cmd_config "$@" ;;

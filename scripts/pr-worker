@@ -80,6 +80,7 @@ pick_review() {  # prints "review_id|pr_id" (creates the queued row for auto pic
 }
 launch() {  # review_id pr_id
   local win; win="review-$(sql_ro "SELECT substr(repo, instr(repo, '/') + 1) || '-' || number FROM prs WHERE id = $2;")"
+  win="${win//./-}"   # tmux -t parses '.' as a pane separator — dotted repo names would make the window untargetable
   if [[ "$inline" == 1 ]]; then "$ROOT/scripts/pr-review-run" "$2" --review-id "$1" || true; return 0; fi
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   # claim the row before the runner comes up, or the next pick in this cycle launches it again

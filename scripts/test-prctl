@@ -499,6 +499,16 @@ db "UPDATE prs SET state='open' WHERE repo='FS-Code/alpha' AND number=5;"
 touch "$FAKE_DIR/gh/merge-fail"
 chk "gh merge failure → stays open"  "! \"\$PRCTL\" merge alpha#5 --yes >/dev/null 2>&1 && [[ \$(db \"SELECT state FROM prs WHERE repo='FS-Code/alpha' AND number=5;\") == open ]]"
 rm -f "$FAKE_DIR/gh/merge-fail"
+cat > "$FAKE_DIR/bin/acli" <<'ACLIEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE_DIR/acli-args.txt"
+echo "Work item BOOKNETIC-9999 created"
+ACLIEOF
+chmod +x "$FAKE_DIR/bin/acli"
+chk "ticket creates a Jira work item"  "\"\$PRCTL\" ticket alpha#1 --title 'Fix the tenant picker' --body 'details' 2>/dev/null | LC_ALL=C grep -q 'BOOKNETIC-9999' && LC_ALL=C grep -q 'Fix the tenant picker' \"\$FAKE_DIR/acli-args.txt\""
+chk "ticket requires --title"          "! \"\$PRCTL\" ticket alpha#1 2>/dev/null"
+chk "UI ticket action"                 "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"ticket\",\"ref\":\"alpha#1\",\"title\":\"T\",\"body\":\"B\"}' | jq -e '.ok' >/dev/null"
+rm -f "$FAKE_DIR/bin/acli"
 chk "UI merge action"                "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"merge\",\"ref\":\"alpha#5\"}' | jq -e '.ok' >/dev/null && [[ \$(db \"SELECT state FROM prs WHERE repo='FS-Code/alpha' AND number=5;\") == merged ]]"
 
 chk "optimize creates -opt.md"           "\"\$PRCTL\" optimize alpha#1 >/dev/null 2>&1 && test -s \"\$(db \"SELECT replace(report_path,'.md','-opt.md') FROM pr_reviews WHERE pr_id=$(pid_of alpha 1) ORDER BY id DESC LIMIT 1;\")\""
@@ -508,6 +518,10 @@ rm -f "$FAKE_DIR/gh/calls.log"
 chk "post --optimized sends the opt body" "\"\$PRCTL\" post alpha#1 --yes --optimized --verdict C >/dev/null 2>&1 && grep -q 'one real finding (kept)' \"\$FAKE_DIR/gh/last-body.md\" && ! grep -q 'False Positives' \"\$FAKE_DIR/gh/last-body.md\""
 db "UPDATE pr_reviews SET status='staged' WHERE pr_id=$(pid_of alpha 1);"
 chk "POST post → gh pr review via prctl" "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"post\",\"ref\":\"alpha#1\",\"verdict\":\"C\"}' | jq -e '.ok' >/dev/null && grep -q -- '--comment' \"\$FAKE_DIR/gh/calls.log\" && [[ \$(db \"SELECT status FROM pr_reviews WHERE pr_id=$(pid_of alpha 1) ORDER BY id DESC LIMIT 1;\") == posted ]]"
+chk "GET /term page renders"            "curl -s \"\$BASE/term\" | has 'terminal'"
+chk "term capture bad name → 400"       "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$BASE/api/term/capture?win=a;rm\") == 400 ]]"
+chk "term capture unknown win → 404"    "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$BASE/api/term/capture?win=zz-nope-$$\") == 404 ]]"
+chk "term keys unknown win → 404"       "[[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST \"\$BASE/api/term/keys\" -d '{\"win\":\"zz-nope\",\"text\":\"hi\"}') == 404 ]]"
 kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null
 
 # --- summary ---

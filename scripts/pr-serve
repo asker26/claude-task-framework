@@ -29,6 +29,7 @@ ACTIONS = {  # action → prctl argv builder (only these are reachable from the 
     "work":     lambda p: ["work", p["ref"]] + (["--notes", str(p["notes"])[:2000]] if p.get("notes") else []),
     "optimize": lambda p: ["optimize", p["ref"]],
     "merge":    lambda p: ["merge", p["ref"], "--yes"] + (["--admin"] if p.get("admin") else []),
+    "ticket":   lambda p: ["ticket", p["ref"], "--title", str(p["title"])[:250], "--body", str(p.get("body", ""))[:6000]],
     "skip":     lambda p: ["skip", p["ref"]] + (["--days", str(int(p["days"]))] if p.get("days") else []),
     "unskip":   lambda p: ["unskip", p["ref"]],
     "sync":     lambda p: ["sync"],
@@ -353,6 +354,13 @@ function workerToggle(){act({action:'worker',mode:S&&S.worker_running?'stop':'st
 function queueReview(ref){const n=prompt('Directions for the reviewer (optional — e.g. "focus on the payment flow, ignore CSS")','');if(n===null)return;act({action:'review',ref,notes:n||undefined})}
 function takeOver(ref){const n=prompt('Initial directions for your interactive session (optional)','');if(n===null)return;act({action:'takeover',ref,notes:n||undefined})}
 function workOn(ref){const n=prompt('What do you want to do on this PR? (optional — e.g. "fix findings 1 and 3", "rename the endpoint")','');if(n===null)return;act({action:'work',ref,notes:n||undefined})}
+function addJira(el,ref){el.querySelectorAll('table').forEach(t=>{const ths=[...t.querySelectorAll('thead th')];const hdr=ths.map(x=>x.textContent.trim().toLowerCase());const fi=hdr.indexOf('finding');if(fi<0)return;const fl=hdr.findIndex(h=>h.startsWith('file'));
+ const hrow=t.querySelector('thead tr');if(hrow){const th=document.createElement('th');hrow.appendChild(th)}
+ [...t.querySelectorAll('tbody tr')].forEach(tr=>{const td=tr.querySelectorAll('td');if(td.length<=fi)return;const b=document.createElement('button');b.textContent='→ Jira';b.title='create a Jira work item from this finding';
+  b.onclick=ev=>{ev.stopPropagation();const find=(td[fi]?.textContent||'').trim();const file=fl>=0?(td[fl]?.textContent||'').trim():'';
+   const t0=prompt('Jira summary:','['+ref+'] '+find.slice(0,120).replace(/\s+/g,' '));if(!t0)return;
+   act({action:'ticket',ref,title:t0,body:(file?('File: '+file+'\n\n'):'')+find})};
+  const c=document.createElement('td');c.appendChild(b);tr.appendChild(c)})})}
 function sz(b){return `<span class="dim">${b.changed_files??'?'}f <span style="color:var(--ok)">+${b.additions??'?'}</span>/<span style="color:var(--bad)">-${b.deletions??'?'}</span></span>`}
 function tags(b){let t='';if(b.stale)t+='<span class="tag stale">STALE</span>';if(b.conflicts)t+='<span class="tag red">conflicts</span>';if(b.ci_red)t+='<span class="tag red">ci-red</span>';if(b.checks==='SUCCESS'&&(b.status==='approved'||b.status==='mine'))t+='<span class="tag ok">green</span>';if(b.too_big)t+='<span class="tag">too-big</span>';if(b.claims)t+='<span class="tag claim">s:'+esc(b.claims)+'</span>';return t}
 function stext(b){if(b.status==='staged')return 'staged '+(b.active_review_verdict||'?')+(b.active_review_behind?' (behind)':'');if(b.status==='waiting-author')return 'waiting '+b.waiting_days+'d';if(b.status==='approved')return b.ready?'ready ✓':'approved';if(b.status==='mine')return b.ready?'ready ✓':(b.review_decision||'no-review').toLowerCase();return b.status}
@@ -366,18 +374,19 @@ function render(){if(!S)return;document.getElementById('org').textContent=S.org;
  document.getElementById('running').innerHTML=S.running.length?S.running.map(r=>`<div class="card run"><b>RUNNING</b> <span class="ref" onclick="openLog('${r.ref}')">${esc(r.ref)}</span> · ${r.mins}m · agents ${r.agents} · heartbeat ${r.hb_s}s ago
  <button onclick="if(confirm('Abort the running review of ${r.ref}?'))act({action:'abort',ref:'${r.ref}'})">abort</button>
  <button onclick="takeOver('${r.ref}')" title="abort it yourself first if you want a clean takeover">take over</button>
+ <a href="/term?win=review-${r.ref.replace(/[.#]/g,'-')}" target="_blank"><button>web term</button></a>
  <div class="act">${esc(r.last_action||'')}</div></div>`).join(''):'<div class="card small">worker idle — nothing running</div>';
  document.getElementById('staged').innerHTML=S.staged.length?`<table class="board">`+S.staged.map(s=>`<tr class="${sel===s.ref?'sel':''}" onclick="openReport('${s.ref}')"><td><span class="ref">${esc(s.ref)}</span> ${gh(s)}</td><td class="status st-staged">${esc(s.verdict||'?')}${s.behind?' (behind)':''}</td><td>${s.mins_ago}m ago</td><td>${sz(s)}</td><td>${esc(s.author||'')}</td><td class="title">${esc(s.title||'')}</td><td><button class="primary" onclick="event.stopPropagation();openReport('${s.ref}')">read</button> <a href="/report?ref=${encodeURIComponent(s.ref)}" target="_blank" onclick="event.stopPropagation()"><button>full page ↗</button></a></td></tr>`).join('')+'</table>':'<div class="small">nothing staged</div>';
  document.getElementById('queue').innerHTML=S.queue.length?S.queue.map(q=>`<div><span class="ref" onclick="openReport('${q.ref}')">${esc(q.ref)}</span> queued ${q.mins}m ago${q.attempts?' · attempt '+(q.attempts+1):''} <button onclick="act({action:'discard',ref:'${q.ref}',reason:'dequeued from UI'})">dequeue</button></div>`).join(''):'(empty)';
  const by=st=>S.board.filter(b=>st.includes(b.status));
- document.getElementById('board').innerHTML=section('Needs you',by(['running','staged','review-failed','re-review','author-replied','needs-review']))+section('Waiting on author',by(['waiting-author','commented']))+section('Approved',by(['approved']))+section('Mine',by(['mine']))+section('Skipped',by(['skipped']))+section('Drafts',by(['draft']));
+ document.getElementById('board').innerHTML=section('Needs you',by(['staged','review-failed','re-review','author-replied','needs-review']))+section('Waiting on author',by(['waiting-author','commented']))+section('Approved',by(['approved']))+section('Mine',by(['mine']))+section('Skipped',by(['skipped']))+section('Drafts',by(['draft']));
  document.getElementById('sessions').innerHTML=S.sessions.length?S.sessions.map(s=>`<div><b>${esc(s.label||s.id)}</b> <span class="tag">${esc(s.kind)}</span> ${esc(s.repo||'')} ${s.claims?'· claims '+esc(s.claims):''} <span class="dim">· seen ${esc(s.last_seen_at.slice(11,16))}</span></div>`).join(''):'(none live)';
  document.getElementById('history').innerHTML=S.history.length?S.history.map(h=>`<div>${esc((h.finished_at||h.started_at||'').slice(5,16))} <b>${esc(h.ref)}</b> ${esc(h.status)} ${esc(h.verdict||'')} ${h.took!=null?h.took+'m':''} ${h.error?'— '+esc(h.error.slice(0,80)):''}</div>`).join(''):'(nothing yet)'}
 async function load(){try{S=await (await fetch('/api/state')).json();render()}catch(e){document.getElementById('hdr').textContent='server unreachable'}}
 function closeReport(){sel=null;document.querySelector('main').classList.remove('split');render()}
 async function openReport(ref,view){sel=ref;render();document.querySelector('main').classList.add('split');const r=await (await fetch('/api/report?ref='+encodeURIComponent(ref)+(view?'&view='+view:''))).json();const el=document.getElementById('report');
  if(r.error){el.innerHTML=`<div class="card"><b>${esc(ref)}</b>${r.url?` · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'open on GitHub')} ↗</a>`:''}${r.author?` · ${esc(r.author)}`:''}${r.status?` · <span class="status st-${esc(r.status)}">${esc(r.status)}</span>`:''}<br><span class="small">${esc(r.error)}</span>
- <div class="actions"><button class="primary" onclick="queueReview('${ref}')">queue review</button> <button onclick="takeOver('${ref}')">take over</button> <button onclick="workOn('${ref}')">work on it</button> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
+ <div class="actions"><button class="primary" onclick="queueReview('${ref}')">queue review</button> <button onclick="takeOver('${ref}')">take over</button> <button onclick="workOn('${ref}')">work on it</button> <a href="/term?win=work-${ref.replace(/[.#]/g,'-')}" target="_blank"><button>web term</button></a> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
  const canPost=r.status==='staged';const v=r.verdict||'';
  el.innerHTML=`<div class="card"><b>${esc(r.ref)}</b> · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'')}</a> · ${esc(r.author||'')}<br>
  <span class="small">review ${r.id} · ${esc(r.status)} · verdict <b>${esc(v||'unparsed')}</b> · reviewed ${esc((r.head_sha||'').slice(0,7))}${r.behind?' <span class="tag stale">behind head '+esc((r.pr_head||'').slice(0,7))+'</span>':''}${r.has_optimized?' · viewing <b>'+r.view+'</b>':''} · ${esc((r.finished_at||''))}</span>
@@ -391,8 +400,9 @@ async function openReport(ref,view){sel=ref;render();document.querySelector('mai
  <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a>
  <button class="danger" onclick="mergeIt('${r.ref}')">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label>
  <button onclick="takeOver('${r.ref}')">Take over</button> <button onclick="workOn('${r.ref}')">Work on it</button>
+ <a href="/term?win=work-${r.ref.replace(/[.#]/g,'-')}" target="_blank"><button>web term ↗</button></a>
  <button onclick="closeReport()">Close</button></div></div>
- <div class="body">${r.html}</div>`}
+ <div class="body">${r.html}</div>`;addJira(el.querySelector('.body'),r.ref)}
 function mergeIt(ref){const a=document.getElementById('madmin');if(!confirm('Merge '+ref+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref,admin:!!(a&&a.checked)})}
 function postIt(ref){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 async function openLog(ref){sel=ref;document.querySelector('main').classList.add('split');const t=await (await fetch('/api/log?ref='+encodeURIComponent(ref))).text();document.getElementById('report').innerHTML=`<div class="card"><b>${esc(ref)}</b> · session log (last 200 events) <button onclick="openLog('${ref}')">refresh</button> <button onclick="openReport('${ref}')">report</button> <button onclick="closeReport()">close</button></div><pre class="body" style="white-space:pre-wrap;font-size:12px">${esc(t)}</pre>`}
@@ -413,6 +423,14 @@ function toast(t){const e=document.getElementById('toast');e.textContent=t;e.sty
 async function act(p){toast('… '+p.action+' '+(p.ref||''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);if(j.ok)setTimeout(()=>location.reload(),1200)}
 function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 function mergeIt(){const a=document.getElementById('madmin');if(!confirm('Merge '+REF+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref:REF,admin:!!(a&&a.checked)})}
+function addJira(el,ref){if(!el)return;el.querySelectorAll('table').forEach(t=>{const ths=[...t.querySelectorAll('thead th')];const hdr=ths.map(x=>x.textContent.trim().toLowerCase());const fi=hdr.indexOf('finding');if(fi<0)return;const fl=hdr.findIndex(h=>h.startsWith('file'));
+ const hrow=t.querySelector('thead tr');if(hrow){const th=document.createElement('th');hrow.appendChild(th)}
+ [...t.querySelectorAll('tbody tr')].forEach(tr=>{const td=tr.querySelectorAll('td');if(td.length<=fi)return;const b=document.createElement('button');b.textContent='→ Jira';
+  b.onclick=ev=>{ev.stopPropagation();const find=(td[fi]?.textContent||'').trim();const file=fl>=0?(td[fl]?.textContent||'').trim():'';
+   const t0=prompt('Jira summary:','['+ref+'] '+find.slice(0,120).replace(/\s+/g,' '));if(!t0)return;
+   act({action:'ticket',ref,title:t0,body:(file?('File: '+file+'\n\n'):'')+find})};
+  const c=document.createElement('td');c.appendChild(b);tr.appendChild(c)})})}
+addJira(document.querySelector('#report .body'),REF);
 function takeOver(){const n=prompt('Initial directions for your interactive session (optional)','');if(n===null)return;act({action:'takeover',ref:REF,notes:n||undefined})}
 function workOn(){const n=prompt('What do you want to do on this PR? (optional)','');if(n===null)return;act({action:'work',ref:REF,notes:n||undefined})}
 </script></body></html>"""
@@ -447,7 +465,8 @@ def report_page(ref, view=""):
             actions += '<button onclick="act({action:\'optimize\',ref:REF})">Optimize</button> '
         actions += ('<button class="danger" onclick="mergeIt()">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label> '
                     '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> '
-                    '<button onclick="takeOver()">Take over</button> <button onclick="workOn()">Work on it</button> <a href="/"><button>back to cockpit</button></a>')
+                    '<button onclick="takeOver()">Take over</button> <button onclick="workOn()">Work on it</button> '
+                    f'<a href="/term?win=work-{html.escape(ref.split("/")[-1].replace("#","-").replace(".","-"))}" target="_blank"><button>web term</button></a> <a href="/"><button>back to cockpit</button></a>')
         viewing = f' · viewing <b>{r["view"]}</b>' if r.get("has_optimized") else ""
         card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
                 f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind}{viewing} · {html.escape(r.get("finished_at") or "")}</span>'
@@ -455,6 +474,99 @@ def report_page(ref, view=""):
         body = r["html"]
     return (REPORT_PAGE.replace("__CSS__", CSS).replace("__TITLE__", html.escape(f"{ref} · report"))
             .replace("__CARD__", card).replace("__HTML__", body).replace("__REF__", json.dumps(ref)))
+
+
+WIN_RE = re.compile(r"^[\w.#-]+$")
+
+
+def term_windows():
+    try:
+        out = subprocess.run(["tmux", "list-windows", "-t", TMUX_SESSION, "-F", "#{window_name}"],
+                             capture_output=True, text=True, timeout=3).stdout
+        return [w for w in out.split() if w]
+    except Exception:
+        return []
+
+
+def term_capture(win):
+    if not WIN_RE.match(win or ""):
+        return 400, "bad window name"
+    p = subprocess.run(["tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", f"{TMUX_SESSION}:{win}"],
+                       capture_output=True, text=True, timeout=5)
+    if p.returncode != 0:
+        return 404, f"window '{win}' not found (start it with Take over / Work on it)"
+    return 200, p.stdout
+
+
+TERM_KEYS = {"Enter": "Enter", "Esc": "Escape", "C-c": "C-c", "Up": "Up", "Down": "Down", "Tab": "Tab"}
+
+
+def term_send(payload):
+    win = payload.get("win", "")
+    if not WIN_RE.match(win) or win not in term_windows():
+        return 404, {"ok": False, "output": "window not found"}
+    target = f"{TMUX_SESSION}:{win}"
+    special = payload.get("special")
+    if special:
+        if special not in TERM_KEYS:
+            return 400, {"ok": False, "output": "bad key"}
+        subprocess.run(["tmux", "send-keys", "-t", target, TERM_KEYS[special]], timeout=5)
+        return 200, {"ok": True, "output": special}
+    text = str(payload.get("text", ""))[:4000]
+    if text:
+        subprocess.run(["tmux", "send-keys", "-t", target, "-l", text], timeout=5)
+    if payload.get("enter", True):
+        subprocess.run(["tmux", "send-keys", "-t", target, "Enter"], timeout=5)
+    return 200, {"ok": True, "output": "sent"}
+
+
+TERM_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>__TITLE__</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>__CSS__
+.termwrap{max-width:1200px;margin:0 auto;padding:12px}
+#screen{background:#0b0e14;color:#d7dae0;border:1px solid var(--line);border-radius:8px;padding:10px;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-y:auto;height:calc(100vh - 170px)}
+:root[data-theme="light"] #screen{background:#101418;color:#d7dae0}
+.termbar{display:flex;gap:8px;margin-top:8px}.termbar input[type=text]{flex:1;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit}
+.winlist a{color:var(--acc);margin-right:14px}
+</style>
+<script>(function(){var t=localStorage.getItem('prc-theme');if(t)document.documentElement.setAttribute('data-theme',t)})();</script>
+</head><body>
+<header><h1><a href="/" style="color:var(--fg);text-decoration:none">PR cockpit</a> · <span class="dim">terminal</span> <b id="winname"></b></h1><span class="grow"></span>
+<span class="small dim" id="stat"></span></header>
+<div class="termwrap">
+<div class="winlist small" id="winlist"></div>
+<div id="screen">connecting…</div>
+<div class="termbar">
+ <input type="text" id="inp" placeholder="type to the session — Enter sends (claude sees it as your message)" autofocus>
+ <button class="primary" onclick="send()">Send</button>
+ <button onclick="key('Esc')">Esc</button><button onclick="key('C-c')">Ctrl-C</button><button onclick="key('Enter')">Enter</button>
+ <button onclick="key('Up')">↑</button><button onclick="key('Down')">↓</button><button onclick="key('Tab')">Tab</button>
+</div>
+</div>
+<script>
+const WIN=new URLSearchParams(location.search).get('win')||'';
+document.getElementById('winname').textContent=WIN;
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let stick=true;
+const scr=document.getElementById('screen');
+scr.addEventListener('scroll',()=>{stick=scr.scrollTop+scr.clientHeight>=scr.scrollHeight-30});
+async function tick(){
+ try{
+  const wl=await (await fetch('/api/term/windows')).json();
+  document.getElementById('winlist').innerHTML=wl.map(w=>`<a href="/term?win=${encodeURIComponent(w)}" style="${w===WIN?'font-weight:700':''}">${esc(w)}</a>`).join('');
+  if(!WIN){scr.textContent='pick a window above (take-* and work-* are your interactive sessions)';return}
+  const r=await fetch('/api/term/capture?win='+encodeURIComponent(WIN));
+  const t=await r.text();
+  document.getElementById('stat').textContent=r.ok?new Date().toLocaleTimeString():'window gone?';
+  scr.textContent=t;
+  if(stick)scr.scrollTop=scr.scrollHeight;
+ }catch(e){document.getElementById('stat').textContent='server unreachable'}
+}
+async function send(){const i=document.getElementById('inp');if(!WIN)return;await fetch('/api/term/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({win:WIN,text:i.value})});i.value='';setTimeout(tick,150)}
+async function key(k){if(!WIN)return;await fetch('/api/term/keys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({win:WIN,special:k})});setTimeout(tick,150)}
+document.getElementById('inp').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();send()}});
+tick();setInterval(tick,1000);
+</script></body></html>"""
 
 
 def log_text(ref):
@@ -509,6 +621,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, PAGE.replace("__CSS__", CSS), "text/html; charset=utf-8")
             elif u.path == "/report":
                 self._send(200, report_page(q.get("ref", [""])[0], q.get("view", [""])[0]), "text/html; charset=utf-8")
+            elif u.path == "/term":
+                win = q.get("win", [""])[0]
+                self._send(200, TERM_PAGE.replace("__CSS__", CSS).replace("__TITLE__", html.escape(win or "terminal")), "text/html; charset=utf-8")
+            elif u.path == "/api/term/windows":
+                self._send(200, term_windows())
+            elif u.path == "/api/term/capture":
+                code, text = term_capture(q.get("win", [""])[0])
+                self._send(code, text, "text/plain; charset=utf-8")
             elif u.path == "/api/state":
                 self._send(200, state())
             elif u.path == "/api/report":
@@ -522,14 +642,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path != "/api/action":
+        if u.path not in ("/api/action", "/api/term/keys"):
             return self._send(404, {"error": "not found"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             payload = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, {"ok": False, "output": "bad json"})
-        code, body = run_action(payload)
+        code, body = (term_send(payload) if u.path == "/api/term/keys" else run_action(payload))
         self._send(code, body)
 
 

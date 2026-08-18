@@ -124,6 +124,15 @@ A worker review is headless — it takes no input mid-flight. The three controls
 If a runner dies mid-review (Mac sleep is the usual killer), nothing is lost: reviews run under `caffeinate`,
 and the reaper stages a finished report it finds instead of re-running (`error: runner died; report salvaged`).
 
+## Web terminal & Jira tickets
+
+- `/term` (linked as **web term** on running cards and report pages) mirrors any tmux window of the cockpit
+  session in the browser — watch what Claude does live and type to it (input box + Esc/Ctrl-C keys). Your
+  interactive sessions are the `take-*` / `work-*` windows; `review-*` are the headless runs.
+- **→ Jira** next to every finding row in a report creates a BOOKNETIC work item from it (via `acli`;
+  the summary is editable in the prompt, the body carries file:line + finding + PR link). CLI:
+  `prctl ticket <ref> --title "…" [--body "…"]` — the Jira project comes from the org's `jira_project_key`.
+
 ## Sessions and claims
 
 When you start working on a PR in a Claude session: `!prctl claim <ref>` (optionally `--note "…"`).
