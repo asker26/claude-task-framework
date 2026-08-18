@@ -14,6 +14,7 @@ usage: prctl <command> [args]
   optimize <ref>                                   compact the report (drop none-found/process noise) → <report>-opt.md
   post <ref> [--verdict A|RC|C] [--full|--optimized] [--yes] [--force]
   discard <ref> [--reason T]
+  merge <ref> [--method merge|squash|rebase] [--admin] [--yes]   merge on GitHub (uses config merge_method, default squash)
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
@@ -197,7 +198,7 @@ cmd_optimize() {
     claude --dangerously-skip-permissions -p --model "$model" \
     "Rewrite this PR review report into a compact version for the PR author.
 KEEP: the **Verdict:** line verbatim, the summary, and every concrete finding with its file:line and the required fix.
-REMOVE ENTIRELY: sections or paragraphs reporting that nothing was found; validator/process narration (rounds, who confirmed what); 'False Positives Removed', 'Dropped as defensive', and 'Missed in Round 1' sections unless they contain a surviving actionable finding; restatements and praise.
+REMOVE ENTIRELY: sections or paragraphs reporting that nothing was found; validator/process narration (rounds, who confirmed what); 'False Positives Removed', 'Dropped as defensive', and 'Missed in Round 1' sections unless they contain a surviving actionable finding; restatements and praise; process asks that are not code defects (requests to explain intent, empty-PR-body complaints, TDD/missing-test compliance notes) — drop such findings even if numbered, and recompute the summary from what remains.
 Tighten the wording of what remains. Keep markdown; keep tables only where they carry findings, and compress verbose cells.
 Output ONLY the rewritten markdown — no preamble, no commentary.
 
@@ -207,6 +208,30 @@ $content" > "$opt.tmp" || { rm -f "$opt.tmp"; echo "optimize failed (claude exit
   fi
   mv "$opt.tmp" "$opt"
   echo "optimized → $opt"
+}
+
+cmd_merge() {
+  local id yes=0 admin="" method="" repo num title state is_draft mergeable checks
+  id="$(pr_id_or_die "$1")"; shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --yes|-y) yes=1; shift ;; --admin) admin="--admin"; shift ;; --method) method="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac
+  done
+  method="${method:-$(setting_get merge_method)}"; method="${method:-squash}"
+  case "$method" in merge|squash|rebase) ;; *) echo "bad method '$method' (merge|squash|rebase)" >&2; exit 1 ;; esac
+  "$ROOT/scripts/pr-sync" --pr "$(pr_ref_of_id "$id")" >/dev/null 2>&1 || true
+  IFS='|' read -r repo num title state is_draft mergeable checks < <(sql_ro "SELECT repo, number, COALESCE(title,''), state, is_draft, COALESCE(mergeable,''), COALESCE(checks,'') FROM prs WHERE id = $id;")
+  [[ "$state" == open ]] || { echo "PR is $state — nothing to merge" >&2; exit 1; }
+  [[ "$is_draft" == 0 ]] || { echo "PR is a draft — mark it ready on GitHub first" >&2; exit 1; }
+  [[ "$mergeable" == CONFLICTING ]] && echo "warn: GitHub reports merge conflicts" >&2
+  [[ "$checks" == FAILURE ]] && echo "warn: CI is red" >&2
+  if [[ "$yes" != 1 ]]; then
+    read -r -p "Merge $(pr_ref_short "$repo" "$num") ($method${admin:+, admin}) — '$title'? [y/N] " ans
+    [[ "$ans" == y || "$ans" == Y ]] || { echo "aborted"; exit 1; }
+  fi
+  gh pr merge "$num" --repo "$repo" "--$method" $admin || { echo "gh pr merge failed" >&2; exit 1; }
+  sql "UPDATE prs SET state = 'merged', synced_at = CURRENT_TIMESTAMP WHERE id = $id;
+       UPDATE pr_reviews SET status = 'discarded', error = 'pr merged', finished_at = CURRENT_TIMESTAMP WHERE pr_id = $id AND status IN ('queued', 'staged');"
+  echo "merged $(pr_ref_short "$repo" "$num") ($method)"
 }
 
 # ---------------------------------------------------------------- skip / config
@@ -224,7 +249,7 @@ cmd_unskip() {
   echo "unskipped $(pr_ref_of_id "$id")"
 }
 cmd_config() {
-  local int_keys=" max_diff stale_author_days stale_days max_reviews " str_keys=" ignore_repos ignore_authors model "
+  local int_keys=" max_diff stale_author_days stale_days max_reviews " str_keys=" ignore_repos ignore_authors model merge_method "
   case "${1:-list}" in
     list) sql_table "SELECT key, value, updated_at FROM pr_settings ORDER BY key;" ;;
     get)  setting_get "$2"; echo ;;
@@ -232,6 +257,8 @@ cmd_config() {
             [[ "$3" =~ ^[0-9]+$ ]] || { echo "value must be an integer" >&2; exit 1; }
           elif [[ "$2" == model ]]; then
             [[ "$3" == claude-sonnet-5 || "$3" == claude-opus-4-8 ]] || { echo "model must be claude-sonnet-5 or claude-opus-4-8" >&2; exit 1; }
+          elif [[ "$2" == merge_method ]]; then
+            [[ "$3" == merge || "$3" == squash || "$3" == rebase ]] || { echo "merge_method must be merge|squash|rebase" >&2; exit 1; }
           elif [[ "$str_keys" != *" $2 "* ]]; then
             echo "unknown key $2 — one of:$int_keys$str_keys" >&2; exit 1
           fi
@@ -481,6 +508,7 @@ case "$cmd" in
   optimize) cmd_optimize "${1:?ref required}" ;;
   edit)    cmd_edit "${1:?ref required}" ;;
   discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
+  merge)   cmd_merge "${1:?ref required}" "${@:2}" ;;
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
   unskip)  cmd_unskip "${1:?ref required}" ;;
   config)  cmd_config "$@" ;;

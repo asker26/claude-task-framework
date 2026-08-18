@@ -25,6 +25,7 @@ ACTIONS = {  # action → prctl argv builder (only these are reachable from the 
     "discard":  lambda p: ["discard", p["ref"], "--reason", p.get("reason") or "discarded from UI"],
     "review":   lambda p: ["review", p["ref"]],
     "optimize": lambda p: ["optimize", p["ref"]],
+    "merge":    lambda p: ["merge", p["ref"], "--yes"] + (["--admin"] if p.get("admin") else []),
     "skip":     lambda p: ["skip", p["ref"]] + (["--days", str(int(p["days"]))] if p.get("days") else []),
     "unskip":   lambda p: ["unskip", p["ref"]],
     "sync":     lambda p: ["sync"],
@@ -348,7 +349,8 @@ async function act(p){toast('… '+p.action+(p.ref?' '+p.ref:''));const r=await 
 function workerToggle(){act({action:'worker',mode:S&&S.worker_running?'stop':'start'})}
 function tags(b){let t='';if(b.stale)t+='<span class="tag stale">STALE</span>';if(b.conflicts)t+='<span class="tag red">conflicts</span>';if(b.ci_red)t+='<span class="tag red">ci-red</span>';if(b.checks==='SUCCESS'&&(b.status==='approved'||b.status==='mine'))t+='<span class="tag ok">green</span>';if(b.too_big)t+='<span class="tag">too-big</span>';if(b.claims)t+='<span class="tag claim">s:'+esc(b.claims)+'</span>';return t}
 function stext(b){if(b.status==='staged')return 'staged '+(b.active_review_verdict||'?')+(b.active_review_behind?' (behind)':'');if(b.status==='waiting-author')return 'waiting '+b.waiting_days+'d';if(b.status==='approved')return b.ready?'ready ✓':'approved';if(b.status==='mine')return b.ready?'ready ✓':(b.review_decision||'no-review').toLowerCase();return b.status}
-function rowBtns(b){let h='';if(b.status==='staged')h+=`<button class="primary" onclick="event.stopPropagation();openReport('${b.ref}')">read</button> `;if(['needs-review','re-review','author-replied','review-failed','commented','waiting-author','approved'].includes(b.status))h+=`<button onclick="event.stopPropagation();act({action:'review',ref:'${b.ref}'})">queue review</button> `;if(b.status==='skipped')h+=`<button onclick="event.stopPropagation();act({action:'unskip',ref:'${b.ref}'})">unskip</button> `;else if(b.status!=='mine')h+=`<button onclick="event.stopPropagation();act({action:'skip',ref:'${b.ref}',days:7})">skip 7d</button>`;return h}
+function mergeBtn(b){return `<button class="danger" onclick="event.stopPropagation();if(confirm('Merge ${b.ref} on GitHub?'))act({action:'merge',ref:'${b.ref}'})">merge</button> `}
+function rowBtns(b){let h='';if((b.status==='approved'||b.status==='mine')&&b.ready)h+=mergeBtn(b);if(b.status==='staged')h+=`<button class="primary" onclick="event.stopPropagation();openReport('${b.ref}')">read</button> `;if(['needs-review','re-review','author-replied','review-failed','commented','waiting-author','approved'].includes(b.status))h+=`<button onclick="event.stopPropagation();act({action:'review',ref:'${b.ref}'})">queue review</button> `;if(b.status==='skipped')h+=`<button onclick="event.stopPropagation();act({action:'unskip',ref:'${b.ref}'})">unskip</button> `;else if(b.status!=='mine')h+=`<button onclick="event.stopPropagation();act({action:'skip',ref:'${b.ref}',days:7})">skip 7d</button>`;return h}
 const gh=b=>b.url?`<a class="gh" href="${esc(b.url)}" target="_blank" title="open on GitHub" onclick="event.stopPropagation()">↗</a>`:'';
 function section(title,items){if(!items.length)return '';return `<h2>${title}</h2><table class="board">`+items.map(b=>`<tr class="${sel===b.ref?'sel':''}" onclick="openReport('${b.ref}')"><td><span class="ref">${esc(b.ref)}</span> ${gh(b)}</td><td class="status st-${b.status}">${esc(stext(b))}</td><td>${b.age_days}d</td><td>${esc(b.author||'')}</td><td>${tags(b)}</td><td class="title">${esc(b.title||'')}</td><td>${rowBtns(b)}</td></tr>`).join('')+'</table>'}
 function render(){if(!S)return;document.getElementById('org').textContent=S.org;document.getElementById('clock').textContent=S.now;
@@ -376,8 +378,11 @@ async function openReport(ref,view){sel=ref;render();document.querySelector('mai
  <button class="danger" onclick="if(confirm('Discard this report?'))act({action:'discard',ref:'${r.ref}'})">Discard</button>`:''}
  <button onclick="act({action:'review',ref:'${r.ref}'})">Re-review</button>
  ${r.has_optimized?`<button onclick="openReport('${r.ref}','${r.view==='optimized'?'original':'optimized'}')">view ${r.view==='optimized'?'original':'optimized'}</button> <button onclick="act({action:'optimize',ref:'${r.ref}'})">Re-optimize</button>`:`<button onclick="act({action:'optimize',ref:'${r.ref}'})">Optimize</button>`}
- <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a> <button onclick="closeReport()">Close</button></div></div>
+ <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a>
+ <button class="danger" onclick="mergeIt('${r.ref}')">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label>
+ <button onclick="closeReport()">Close</button></div></div>
  <div class="body">${r.html}</div>`}
+function mergeIt(ref){const a=document.getElementById('madmin');if(!confirm('Merge '+ref+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref,admin:!!(a&&a.checked)})}
 function postIt(ref){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 async function openLog(ref){sel=ref;document.querySelector('main').classList.add('split');const t=await (await fetch('/api/log?ref='+encodeURIComponent(ref))).text();document.getElementById('report').innerHTML=`<div class="card"><b>${esc(ref)}</b> · session log (last 200 events) <button onclick="openLog('${ref}')">refresh</button> <button onclick="openReport('${ref}')">report</button> <button onclick="closeReport()">close</button></div><pre class="body" style="white-space:pre-wrap;font-size:12px">${esc(t)}</pre>`}
 load();setInterval(load,10000);
@@ -396,6 +401,7 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',8000)}
 async function act(p){toast('… '+p.action+' '+(p.ref||''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);if(j.ok)setTimeout(()=>location.reload(),1200)}
 function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
+function mergeIt(){const a=document.getElementById('madmin');if(!confirm('Merge '+REF+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref:REF,admin:!!(a&&a.checked)})}
 </script></body></html>"""
 
 
@@ -426,7 +432,8 @@ def report_page(ref, view=""):
                 actions += '<label class="small"><input type="checkbox" id="vopt" checked> post optimized</label> '
         else:
             actions += '<button onclick="act({action:\'optimize\',ref:REF})">Optimize</button> '
-        actions += '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> <a href="/"><button>back to cockpit</button></a>'
+        actions += ('<button class="danger" onclick="mergeIt()">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label> '
+                    '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> <a href="/"><button>back to cockpit</button></a>')
         viewing = f' · viewing <b>{r["view"]}</b>' if r.get("has_optimized") else ""
         card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
                 f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind}{viewing} · {html.escape(r.get("finished_at") or "")}</span>'

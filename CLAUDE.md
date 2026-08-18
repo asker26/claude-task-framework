@@ -186,6 +186,7 @@ scripts/prctl show bookneticsaas#3128
 scripts/prctl review bookneticsaas#3128 [--now]   # queue for the worker / run here
 scripts/prctl staged | read <ref> | edit <ref> | optimize <ref>   # optimize = compact report (verdict+findings only) → -opt.md; post --optimized
 scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, human-approved, under your account
+scripts/prctl merge <ref> [--method merge|squash|rebase] [--admin]   # human-confirmed GitHub merge; config merge_method (default squash)
 scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # tmux ctf-agents:pr-worker, one review at a time

@@ -36,6 +36,7 @@ work_dir="${work_dir/#\~/$HOME}"
 
 prompt="Review PR #${number} of ${repo} with the reviewer-ultra skill: run /reviewer-ultra ${number} ${repo} (if the slash form does not expand, invoke the Skill tool with skill 'reviewer-ultra' and args '${number} ${repo}').
 Run every subagent in the FOREGROUND — never pass run_in_background — and do not end your turn while any agent is still running.
+SEVERITY BAR for the final report: a numbered finding must name a concrete user action or code path that breaks, or a real defect with a code fix. NEVER report as findings: requests for explanation ('state intent', empty PR body), TDD/process compliance, missing tests, style drift, or narrow theoretical races. If worth mentioning at all, compress those into one short 'Process notes:' line at the end — they must not affect the verdict.
 When the final report is complete, write it VERBATIM to ${report} (markdown; it must contain the '**Verdict:**' line with exactly one of BLOCK, REQUEST_CHANGES, APPROVE_WITH_COMMENTS), then reply with the single line REPORT_WRITTEN.
 Do not post anything to GitHub. Do not modify any file other than ${report}."
 
