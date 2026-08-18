@@ -21,9 +21,10 @@ ORG = os.environ.get("CTF_PR_ORG", "FS-Code")
 TMUX_SESSION = os.environ.get("CTF_TMUX_SESSION", "ctf-agents")
 
 ACTIONS = {  # action → prctl argv builder (only these are reachable from the page)
-    "post":     lambda p: ["post", p["ref"], "--yes"] + (["--verdict", p["verdict"]] if p.get("verdict") else []) + (["--full"] if p.get("full") else []),
+    "post":     lambda p: ["post", p["ref"], "--yes"] + (["--verdict", p["verdict"]] if p.get("verdict") else []) + (["--full"] if p.get("full") else []) + (["--optimized"] if p.get("optimized") else []),
     "discard":  lambda p: ["discard", p["ref"], "--reason", p.get("reason") or "discarded from UI"],
     "review":   lambda p: ["review", p["ref"]],
+    "optimize": lambda p: ["optimize", p["ref"]],
     "skip":     lambda p: ["skip", p["ref"]] + (["--days", str(int(p["days"]))] if p.get("days") else []),
     "unskip":   lambda p: ["unskip", p["ref"]],
     "sync":     lambda p: ["sync"],
@@ -157,7 +158,7 @@ def state():
             "running": running, "queue": queue, "staged": staged, "board": board, "history": history, "sessions": sessions}
 
 
-def report(ref):
+def report(ref, view=""):
     m = re.match(r"^(?:([\w.-]+)/)?([\w.-]+)#(\d+)$", ref or "")
     if not m:
         return {"error": "bad ref"}
@@ -180,6 +181,16 @@ def report(ref):
             md = f.read()
     except OSError:
         return {"error": "report file missing", **r}
+    opt_path = r["report_path"][:-3] + "-opt.md"
+    r["has_optimized"] = os.path.exists(opt_path)
+    r["view"] = "original"
+    if r["has_optimized"] and view != "original":
+        try:
+            with open(opt_path, encoding="utf-8", errors="replace") as f:
+                md = f.read()
+            r["view"] = "optimized"
+        except OSError:
+            pass
     r["ref"] = short_ref(r["repo"], r["number"])
     r["behind"] = r["head_sha"] != r["pr_head"]
     r["markdown"] = md
@@ -260,6 +271,9 @@ def run_action(payload):
         return 400, {"ok": False, "output": "bad ref"}
     if action == "post" and payload.get("verdict") not in (None, "", "A", "RC", "C"):
         return 400, {"ok": False, "output": "bad verdict"}
+    if action == "post" and payload.get("optimized"):
+        payload = dict(payload)
+        payload["full"] = False
     try:
         argv = [PRCTL] + ACTIONS[action](payload)
     except (KeyError, ValueError) as e:
@@ -349,20 +363,22 @@ function render(){if(!S)return;document.getElementById('org').textContent=S.org;
  document.getElementById('history').innerHTML=S.history.length?S.history.map(h=>`<div>${esc((h.finished_at||h.started_at||'').slice(5,16))} <b>${esc(h.ref)}</b> ${esc(h.status)} ${esc(h.verdict||'')} ${h.took!=null?h.took+'m':''} ${h.error?'— '+esc(h.error.slice(0,80)):''}</div>`).join(''):'(nothing yet)'}
 async function load(){try{S=await (await fetch('/api/state')).json();render()}catch(e){document.getElementById('hdr').textContent='server unreachable'}}
 function closeReport(){sel=null;document.querySelector('main').classList.remove('split');render()}
-async function openReport(ref){sel=ref;render();document.querySelector('main').classList.add('split');const r=await (await fetch('/api/report?ref='+encodeURIComponent(ref))).json();const el=document.getElementById('report');
+async function openReport(ref,view){sel=ref;render();document.querySelector('main').classList.add('split');const r=await (await fetch('/api/report?ref='+encodeURIComponent(ref)+(view?'&view='+view:''))).json();const el=document.getElementById('report');
  if(r.error){el.innerHTML=`<div class="card"><b>${esc(ref)}</b>${r.url?` · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'open on GitHub')} ↗</a>`:''}${r.author?` · ${esc(r.author)}`:''}${r.status?` · <span class="status st-${esc(r.status)}">${esc(r.status)}</span>`:''}<br><span class="small">${esc(r.error)}</span>
  <div class="actions"><button class="primary" onclick="act({action:'review',ref:'${ref}'})">queue review</button> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
  const canPost=r.status==='staged';const v=r.verdict||'';
  el.innerHTML=`<div class="card"><b>${esc(r.ref)}</b> · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'')}</a> · ${esc(r.author||'')}<br>
- <span class="small">review ${r.id} · ${esc(r.status)} · verdict <b>${esc(v||'unparsed')}</b> · reviewed ${esc((r.head_sha||'').slice(0,7))}${r.behind?' <span class="tag stale">behind head '+esc((r.pr_head||'').slice(0,7))+'</span>':''} · ${esc((r.finished_at||''))}</span>
+ <span class="small">review ${r.id} · ${esc(r.status)} · verdict <b>${esc(v||'unparsed')}</b> · reviewed ${esc((r.head_sha||'').slice(0,7))}${r.behind?' <span class="tag stale">behind head '+esc((r.pr_head||'').slice(0,7))+'</span>':''}${r.has_optimized?' · viewing <b>'+r.view+'</b>':''} · ${esc((r.finished_at||''))}</span>
  <div class="actions">${canPost?`<label class="small">post as <select id="vsel"><option value="">${esc(v||'unparsed → comment')}</option><option value="A">approve</option><option value="RC">request changes</option><option value="C">comment</option></select></label>
  <label class="small"><input type="checkbox" id="vfull"> full report</label>
+ ${r.has_optimized?`<label class="small"><input type="checkbox" id="vopt" ${r.view==='optimized'?'checked':''}> post optimized</label>`:''}
  <button class="primary" onclick="postIt('${r.ref}')">Post to GitHub</button>
  <button class="danger" onclick="if(confirm('Discard this report?'))act({action:'discard',ref:'${r.ref}'})">Discard</button>`:''}
  <button onclick="act({action:'review',ref:'${r.ref}'})">Re-review</button>
+ ${r.has_optimized?`<button onclick="openReport('${r.ref}','${r.view==='optimized'?'original':'optimized'}')">view ${r.view==='optimized'?'original':'optimized'}</button> <button onclick="act({action:'optimize',ref:'${r.ref}'})">Re-optimize</button>`:`<button onclick="act({action:'optimize',ref:'${r.ref}'})">Optimize</button>`}
  <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a> <button onclick="closeReport()">Close</button></div></div>
  <div class="body">${r.html}</div>`}
-function postIt(ref){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked;if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref,verdict:v||undefined,full})}
+function postIt(ref){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 async function openLog(ref){sel=ref;document.querySelector('main').classList.add('split');const t=await (await fetch('/api/log?ref='+encodeURIComponent(ref))).text();document.getElementById('report').innerHTML=`<div class="card"><b>${esc(ref)}</b> · session log (last 200 events) <button onclick="openLog('${ref}')">refresh</button> <button onclick="openReport('${ref}')">report</button> <button onclick="closeReport()">close</button></div><pre class="body" style="white-space:pre-wrap;font-size:12px">${esc(t)}</pre>`}
 load();setInterval(load,10000);
 </script></body></html>"""
@@ -379,12 +395,12 @@ const REF=__REF__;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',8000)}
 async function act(p){toast('… '+p.action+' '+(p.ref||''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);if(j.ok)setTimeout(()=>location.reload(),1200)}
-function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked;if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full})}
+function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 </script></body></html>"""
 
 
-def report_page(ref):
-    r = report(ref)
+def report_page(ref, view=""):
+    r = report(ref, view)
     if r.get("error") and not r.get("markdown"):
         card = (f'<div class="card"><b>{html.escape(ref)}</b>'
                 + (f' · <a href="{html.escape(r["url"])}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "open on GitHub")} ↗</a>' if r.get("url") else "")
@@ -402,9 +418,18 @@ def report_page(ref):
                         '<label class="small"><input type="checkbox" id="vfull"> full report</label> '
                         '<button class="primary" onclick="postIt()">Post to GitHub</button> '
                         '<button class="danger" onclick="if(confirm(\'Discard this report?\'))act({action:\'discard\',ref:REF})">Discard</button> ')
+        if r.get("has_optimized"):
+            other = "original" if r.get("view") == "optimized" else "optimized"
+            actions += f'<a href="/report?ref={html.escape(ref)}&view={other}"><button>view {other}</button></a> '
+            actions += '<button onclick="act({action:\'optimize\',ref:REF})">Re-optimize</button> '
+            if can_post:
+                actions += '<label class="small"><input type="checkbox" id="vopt" checked> post optimized</label> '
+        else:
+            actions += '<button onclick="act({action:\'optimize\',ref:REF})">Optimize</button> '
         actions += '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> <a href="/"><button>back to cockpit</button></a>'
+        viewing = f' · viewing <b>{r["view"]}</b>' if r.get("has_optimized") else ""
         card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
-                f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind} · {html.escape(r.get("finished_at") or "")}</span>'
+                f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind}{viewing} · {html.escape(r.get("finished_at") or "")}</span>'
                 f'<div class="actions">{actions}</div></div>')
         body = r["html"]
     return (REPORT_PAGE.replace("__CSS__", CSS).replace("__TITLE__", html.escape(f"{ref} · report"))
@@ -462,11 +487,11 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/":
                 self._send(200, PAGE.replace("__CSS__", CSS), "text/html; charset=utf-8")
             elif u.path == "/report":
-                self._send(200, report_page(q.get("ref", [""])[0]), "text/html; charset=utf-8")
+                self._send(200, report_page(q.get("ref", [""])[0], q.get("view", [""])[0]), "text/html; charset=utf-8")
             elif u.path == "/api/state":
                 self._send(200, state())
             elif u.path == "/api/report":
-                self._send(200, report(q.get("ref", [""])[0]))
+                self._send(200, report(q.get("ref", [""])[0], q.get("view", [""])[0]))
             elif u.path == "/api/log":
                 self._send(200, log_text(q.get("ref", [""])[0]), "text/plain; charset=utf-8")
             else:

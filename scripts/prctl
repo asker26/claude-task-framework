@@ -11,7 +11,8 @@ usage: prctl <command> [args]
   sync [--repo X]                                  pull from GitHub now
   review <ref> [--now]                             queue a reviewer-ultra run for the worker, or run it here
   staged | read <ref> | edit <ref>                 staged reports
-  post <ref> [--verdict A|RC|C] [--full] [--yes] [--force]
+  optimize <ref>                                   compact the report (drop none-found/process noise) → <report>-opt.md
+  post <ref> [--verdict A|RC|C] [--full|--optimized] [--yes] [--force]
   discard <ref> [--reason T]
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
@@ -182,6 +183,32 @@ cmd_discard() {
   echo "discarded review $rid for $(pr_ref_of_id "$id")"
 }
 
+cmd_optimize() {
+  local id rid path opt model content
+  id="$(pr_id_or_die "$1")"
+  rid="$(latest_review_id "$id" "'staged'")"; [[ -n "$rid" ]] || rid="$(latest_review_id "$id" "'posted'")"
+  path="$( [[ -n "$rid" ]] && review_field "$rid" report_path || true )"
+  [[ -n "$path" && -f "$path" ]] || { echo "no report for $(pr_ref_of_id "$id")" >&2; exit 1; }
+  opt="${path%.md}-opt.md"
+  model="${CTF_PR_CLAUDE_MODEL:-$(setting_get model)}"; model="${model:-claude-sonnet-5}"
+  content="$(cat "$path")"
+  echo "optimizing $(pr_ref_of_id "$id") report with $model …" >&2
+  env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
+    claude --dangerously-skip-permissions -p --model "$model" \
+    "Rewrite this PR review report into a compact version for the PR author.
+KEEP: the **Verdict:** line verbatim, the summary, and every concrete finding with its file:line and the required fix.
+REMOVE ENTIRELY: sections or paragraphs reporting that nothing was found; validator/process narration (rounds, who confirmed what); 'False Positives Removed', 'Dropped as defensive', and 'Missed in Round 1' sections unless they contain a surviving actionable finding; restatements and praise.
+Tighten the wording of what remains. Keep markdown; keep tables only where they carry findings, and compress verbose cells.
+Output ONLY the rewritten markdown — no preamble, no commentary.
+
+$content" > "$opt.tmp" || { rm -f "$opt.tmp"; echo "optimize failed (claude exited non-zero)" >&2; exit 1; }
+  if [[ ! -s "$opt.tmp" ]] || ! grep -q '\*\*Verdict:\*\*' "$opt.tmp"; then
+    rm -f "$opt.tmp"; echo "optimize failed (empty or no Verdict line in output)" >&2; exit 1
+  fi
+  mv "$opt.tmp" "$opt"
+  echo "optimized → $opt"
+}
+
 # ---------------------------------------------------------------- skip / config
 cmd_skip() {
   local id days="" reason="" until="'9999-12-31 00:00:00'"
@@ -222,11 +249,11 @@ strip_transparency() {  # stdin report → stdout without the two transparency s
   '
 }
 cmd_post() {
-  local ref="$1" id rid override="" full=0 yes=0 force=0 repo num head state author verdict rsha path event dbstate ghid tmp me
+  local ref="$1" id rid override="" full=0 yes=0 force=0 optimized=0 repo num head state author verdict rsha path event dbstate ghid tmp me
   shift
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --verdict) override="$2"; shift 2 ;; --full) full=1; shift ;; --yes|-y) yes=1; shift ;; --force) force=1; shift ;;
+      --verdict) override="$2"; shift 2 ;; --full) full=1; shift ;; --yes|-y) yes=1; shift ;; --force) force=1; shift ;; --optimized) optimized=1; shift ;;
       *) echo "unknown option $1" >&2; exit 1 ;;
     esac
   done
@@ -258,7 +285,10 @@ cmd_post() {
   case "$event" in approve) dbstate=APPROVED ;; request-changes) dbstate=CHANGES_REQUESTED ;; comment) dbstate=COMMENTED ;; esac
 
   tmp="$(mktemp)"; trap 'rm -f "$tmp"' RETURN
-  if [[ "$full" == 1 ]]; then cp "$path" "$tmp"; else strip_transparency < "$path" > "$tmp"; fi
+  if [[ "$optimized" == 1 ]]; then
+    [[ -f "${path%.md}-opt.md" ]] || { echo "no optimized report — run prctl optimize $ref first" >&2; exit 1; }
+    cp "${path%.md}-opt.md" "$tmp"
+  elif [[ "$full" == 1 ]]; then cp "$path" "$tmp"; else strip_transparency < "$path" > "$tmp"; fi
   [[ -s "$tmp" ]] || { echo "empty body after stripping — use --full or prctl edit" >&2; exit 1; }
 
   echo "post → $(pr_ref_short "$repo" "$num") · $event · $(wc -l < "$tmp" | tr -d ' ') lines"
@@ -448,6 +478,7 @@ case "$cmd" in
   review)  cmd_review "${1:?ref required}" "${@:2}" ;;
   staged)  cmd_staged ;;
   read)    cmd_read "${1:?ref required}" ;;
+  optimize) cmd_optimize "${1:?ref required}" ;;
   edit)    cmd_edit "${1:?ref required}" ;;
   discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;

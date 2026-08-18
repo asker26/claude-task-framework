@@ -90,6 +90,11 @@ the report was written — post it anyway or `prctl review <ref>` again.
 
 `prctl review <ref> --now` runs the review in your current terminal (foreground) instead of the worker.
 
+`prctl optimize <ref>` (or the **Optimize** button) rewrites the report into a compact author-facing version —
+verdict + concrete findings only, all "none found"/process narration dropped — saved as `<report>-opt.md`.
+The UI then defaults to the optimized view (toggle to original any time) and pre-checks **post optimized**;
+CLI: `prctl post <ref> --optimized`. Runs one small headless call on the configured worker model (~1 min).
+
 ## Sessions and claims
 
 When you start working on a PR in a Claude session: `!prctl claim <ref>` (optionally `--note "…"`).

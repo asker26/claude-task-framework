@@ -184,7 +184,7 @@ A Claude session is NOT needed to run reviews — the worker runs them headlessl
 scripts/prctl board                 # NEEDS YOU · WAITING ON AUTHOR · APPROVED · MINE  (--repo X, --all, --fresh, --json)
 scripts/prctl show bookneticsaas#3128
 scripts/prctl review bookneticsaas#3128 [--now]   # queue for the worker / run here
-scripts/prctl staged | read <ref> | edit <ref>
+scripts/prctl staged | read <ref> | edit <ref> | optimize <ref>   # optimize = compact report (verdict+findings only) → -opt.md; post --optimized
 scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, human-approved, under your account
 scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
