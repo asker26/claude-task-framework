@@ -19,6 +19,8 @@ usage: prctl <command> [args]
   discard <ref> [--reason T]
   merge <ref> [--method merge|squash|rebase] [--admin] [--keep-branch] [--yes]   merge on GitHub + delete the head branch (kept for main/master/develop*/release*)
   ticket <ref> --title "…" [--body "…"]            create a Jira work item from a review finding (org's project, e.g. BOOKNETIC)
+  fdiscard <ref> <fkey> [--excerpt "…"] [--view V]  hide a finding row from the report + posted body (undo: frestore)
+  frestore <ref> <fkey> [--view V]                  restore a discarded finding
   tickets                                          list work items created from reviews (key, PR, link)
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
@@ -349,6 +351,29 @@ cmd_tickets() {
              FROM pr_tickets t JOIN prs p ON p.id = t.pr_id ORDER BY t.id DESC LIMIT 40;"
 }
 
+finding_review_id() {  # pr id → newest staged/posted review id
+  local rid
+  rid="$(latest_review_id "$1" "'staged'")"; [[ -n "$rid" ]] || rid="$(latest_review_id "$1" "'posted'")"
+  [[ -n "$rid" ]] || { echo "no staged/posted review for $(pr_ref_of_id "$1")" >&2; exit 1; }
+  printf '%s' "$rid"
+}
+cmd_fdiscard() {
+  local id rid fkey="" excerpt="" fview="original"
+  id="$(pr_id_or_die "$1")"; fkey="${2:?fkey required}"; shift 2
+  while [[ $# -gt 0 ]]; do case "$1" in --excerpt) excerpt="$2"; shift 2 ;; --view) fview="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac; done
+  rid="$(finding_review_id "$id")"
+  sql "INSERT OR IGNORE INTO pr_finding_discards (review_id, fkey, excerpt, view) VALUES ($rid, $(sql_str "$fkey"), $(sql_str "$excerpt"), $(sql_str "$fview"));"
+  echo "discarded finding $fkey (review $rid, $fview view) — restore: prctl frestore $(pr_ref_of_id "$id") '$fkey'"
+}
+cmd_frestore() {
+  local id rid fkey="" fview=""
+  id="$(pr_id_or_die "$1")"; fkey="${2:?fkey required}"; shift 2
+  [[ "${1:-}" == "--view" ]] && fview="${2:-}"
+  rid="$(finding_review_id "$id")"
+  sql "DELETE FROM pr_finding_discards WHERE review_id = $rid AND fkey = $(sql_str "$fkey")$([[ -n "$fview" ]] && printf " AND view = %s" "$(sql_str "$fview")");"
+  echo "restored finding $fkey (review $rid)"
+}
+
 # ---------------------------------------------------------------- skip / config
 cmd_skip() {
   local id days="" reason="" until="'9999-12-31 00:00:00'"
@@ -431,6 +456,23 @@ cmd_post() {
     [[ -f "${path%.md}-opt.md" ]] || { echo "no optimized report — run prctl optimize $ref first" >&2; exit 1; }
     cp "${path%.md}-opt.md" "$tmp"
   elif [[ "$full" == 1 ]]; then cp "$path" "$tmp"; else strip_transparency < "$path" > "$tmp"; fi
+  local fview=original; [[ "$optimized" == 1 ]] && fview=optimized
+  DB_PATH="$DB" RID="$rid" FVIEW="$fview" python3 - "$tmp" <<'PYFILTER' || true
+import os, re, sqlite3, sys
+def norm(t): return re.sub(r"\s+", " ", re.sub(r"[*`_|]", "", t.lower())).strip()[:60]
+path = sys.argv[1]
+con = sqlite3.connect(os.environ["DB_PATH"])
+rows = con.execute("SELECT excerpt FROM pr_finding_discards WHERE review_id = ? AND view = ? AND excerpt != ''",
+                   (os.environ["RID"], os.environ["FVIEW"])).fetchall()
+excerpts = [norm(r[0]) for r in rows if r[0]]
+if excerpts:
+    out = []
+    for line in open(path, encoding="utf-8", errors="replace").read().splitlines(True):
+        if line.lstrip().startswith("|") and any(e and e in norm(line) for e in excerpts):
+            continue
+        out.append(line)
+    open(path, "w", encoding="utf-8").write("".join(out))
+PYFILTER
   [[ -s "$tmp" ]] || { echo "empty body after stripping — use --full or prctl edit" >&2; exit 1; }
 
   echo "post → $(pr_ref_short "$repo" "$num") · $event · $(wc -l < "$tmp" | tr -d ' ') lines"
@@ -628,6 +670,8 @@ case "$cmd" in
   discard) cmd_discard "${1:?ref required}" "${@:2}" ;;
   merge)   cmd_merge "${1:?ref required}" "${@:2}" ;;
   ticket)  cmd_ticket "${1:?ref required}" "${@:2}" ;;
+  fdiscard) cmd_fdiscard "${1:?ref required}" "${@:2}" ;;
+  frestore) cmd_frestore "${1:?ref required}" "${@:2}" ;;
   tickets) cmd_tickets ;;
   skip)    cmd_skip "${1:?ref required}" "${@:2}" ;;
   unskip)  cmd_unskip "${1:?ref required}" ;;

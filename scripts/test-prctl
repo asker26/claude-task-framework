@@ -509,6 +509,24 @@ chk "ticket requires --title"          "! \"\$PRCTL\" ticket alpha#1 2>/dev/null
 chk "ticket persisted with url"        "[[ \$(db \"SELECT jira_key FROM pr_tickets WHERE pr_id=$(pid_of alpha 1);\") == BOOKNETIC-9999 ]]"
 chk "api/report lists tickets"         "curl -s \"\$BASE/api/report?ref=alpha%231\" | jq -e '.tickets[0].jira_key == \"BOOKNETIC-9999\"' >/dev/null"
 chk "prctl tickets lists it"           "\"\$PRCTL\" tickets | has 'BOOKNETIC-9999'"
+
+echo "== finding discard =="
+FR="$CTF_PR_REVIEWS_DIR/findings-test.md"
+printf '# Review\n\n| # | File:Line | Finding | Fix |\n|---|---|---|---|\n| 1 | a.ts:5 | The **tenant picker** is capped at 100 | restore search |\n| 2 | b.css:9 | Dead rule shipped | delete it |\n\n**Verdict:** REQUEST_CHANGES\n' > "$FR"
+db "INSERT INTO pr_reviews (pr_id, head_sha, status, report_path, finished_at) VALUES ($(pid_of alpha 2), 'bbb2222', 'staged', '$FR', CURRENT_TIMESTAMP);"
+"$PRCTL" fdiscard alpha#2 "1:the tenant picker is capped at 100" --excerpt "The **tenant picker** is capped at 100" >/dev/null
+chk "fdiscard stores the row"          "[[ \$(db \"SELECT COUNT(*) FROM pr_finding_discards;\") == 1 ]]"
+chk "api/report exposes discards"      "curl -s \"\$BASE/api/report?ref=alpha%232\" | jq -e '.discards[0].fkey | startswith(\"1:\")' >/dev/null"
+jq '.[] | select(.number==2) + {state:"OPEN"}' "$FAKE_DIR/gh/list-alpha.json" > "$FAKE_DIR/gh/view-alpha-2.json" 2>/dev/null || true
+rm -f "$FAKE_DIR/gh/last-body.md"
+"$PRCTL" post alpha#2 --yes --verdict C >/dev/null 2>&1
+chk "posted body excludes discarded"   "! LC_ALL=C grep -q 'tenant picker' \"\$FAKE_DIR/gh/last-body.md\" && LC_ALL=C grep -q 'Dead rule shipped' \"\$FAKE_DIR/gh/last-body.md\""
+db "UPDATE pr_reviews SET status='staged' WHERE report_path='$FR';"
+"$PRCTL" frestore alpha#2 "1:the tenant picker is capped at 100" >/dev/null
+rm -f "$FAKE_DIR/gh/last-body.md"
+"$PRCTL" post alpha#2 --yes --verdict C >/dev/null 2>&1
+chk "restored finding posts again"     "LC_ALL=C grep -q 'tenant picker' \"\$FAKE_DIR/gh/last-body.md\""
+db "DELETE FROM pr_reviews WHERE report_path='$FR'; DELETE FROM pr_finding_discards;"
 chk "UI ticket action"                 "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"ticket\",\"ref\":\"alpha#1\",\"title\":\"T\",\"body\":\"B\"}' | jq -e '.ok' >/dev/null"
 rm -f "$FAKE_DIR/bin/acli"
 chk "UI merge action"                "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"merge\",\"ref\":\"alpha#5\"}' | jq -e '.ok' >/dev/null && [[ \$(db \"SELECT state FROM prs WHERE repo='FS-Code/alpha' AND number=5;\") == merged ]]"

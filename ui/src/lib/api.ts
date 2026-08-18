@@ -24,6 +24,7 @@ export interface SessionRow {
   last_seen_at: string; claims: string | null
 }
 export interface Ticket { jira_key: string; title: string | null; url: string | null; created_at: string }
+export interface FindingDiscard { fkey: string; excerpt: string | null; view: string }
 export interface State {
   org: string; now: string; synced_min: number | null; worker: string; worker_running: boolean
   model: string; running: RunningRow[]; queue: QueueRow[]; staged: StagedRow[]
@@ -33,7 +34,7 @@ export interface Report {
   error?: string; id?: number; ref: string; status?: string; verdict?: string | null
   head_sha?: string; pr_head?: string; behind?: boolean; report_path?: string
   finished_at?: string; title?: string | null; url?: string | null; author?: string | null
-  html?: string; has_optimized?: boolean; view?: string; tickets?: Ticket[]
+  html?: string; has_optimized?: boolean; view?: string; tickets?: Ticket[]; discards?: FindingDiscard[]
 }
 
 export async function getState(): Promise<State> {

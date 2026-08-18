@@ -137,6 +137,10 @@ and the reaper stages a finished report it finds instead of re-running (`error: 
   `prctl ticket <ref> --title "…" [--body "…"]` — the Jira project comes from the org's `jira_project_key`.
   Created tickets are saved (`pr_tickets`) and shown as links on the PR's report card; `prctl tickets`
   lists them all, `prctl show <ref>` includes the PR's own.
+- **discard** next to each finding hides it from the report AND from the posted review body (a slim
+  "discarded — undiscard" strip replaces the row; fully undoable). Stored per review + view in
+  `pr_finding_discards` — a discard made on the optimized view applies when posting optimized, and
+  vice versa. CLI: `prctl fdiscard/frestore <ref> <fkey>`.
 
 ## Sessions and claims
 

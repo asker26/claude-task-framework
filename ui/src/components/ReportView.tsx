@@ -30,10 +30,12 @@ export function ReportView({ refId, full, onClose, refresh }: {
 
   useEffect(() => { void load(view) }, [refId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // decorate finding tables with →Jira buttons
+  // decorate finding tables: →Jira + discard/undiscard per row
   useEffect(() => {
     const el = bodyRef.current
     if (!el || !r?.html) return
+    const norm = (t: string) => t.toLowerCase().replace(/[*`_|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    const discarded = new Set((r.discards ?? []).filter(d => d.view === (r.view ?? 'original')).map(d => d.fkey))
     el.querySelectorAll('table').forEach(t => {
       const hdr = [...t.querySelectorAll('thead th')].map(x => x.textContent?.trim().toLowerCase() ?? '')
       const fi = hdr.indexOf('finding')
@@ -43,13 +45,33 @@ export function ReportView({ refId, full, onClose, refresh }: {
       t.querySelectorAll('tbody tr').forEach(tr => {
         const td = tr.querySelectorAll('td')
         if (td.length <= fi) return
-        const b = document.createElement('button')
-        b.textContent = '→ Jira'
-        b.className = 'h-6 px-2 text-xs rounded border border-border bg-card hover:border-primary/60 cursor-pointer whitespace-nowrap'
-        b.onclick = async ev => {
+        const num = (td[0]?.textContent ?? '').trim()
+        const find = (td[fi]?.textContent ?? '').trim()
+        const file = fl >= 0 ? (td[fl]?.textContent ?? '').trim() : ''
+        const excerpt = norm(find)
+        const fkey = `${num}:${excerpt}`
+        const cell = document.createElement('td')
+        cell.className = 'whitespace-nowrap'
+        if (discarded.has(fkey)) {
+          ;(tr as HTMLElement).style.display = 'none'
+          const ghost = document.createElement('tr')
+          const gtd = document.createElement('td')
+          gtd.colSpan = td.length + 1
+          gtd.className = 'py-1 px-2 text-xs text-muted-foreground italic'
+          const rb = document.createElement('button')
+          rb.textContent = 'undiscard'
+          rb.className = 'ml-2 h-5 px-1.5 text-[11px] rounded border border-border bg-card hover:border-primary/60 cursor-pointer not-italic'
+          rb.onclick = () => void A.run({ action: 'frestore', ref: refId, fkey, view: r.view }, () => void load(view))
+          gtd.append(`finding #${num || '?'} discarded — excluded from the posted review`, rb)
+          ghost.appendChild(gtd)
+          tr.after(ghost)
+          return
+        }
+        const jb = document.createElement('button')
+        jb.textContent = '→ Jira'
+        jb.className = 'h-6 px-2 text-xs rounded border border-border bg-card hover:border-primary/60 cursor-pointer whitespace-nowrap'
+        jb.onclick = async ev => {
           ev.stopPropagation()
-          const find = (td[fi]?.textContent ?? '').trim()
-          const file = fl >= 0 ? (td[fl]?.textContent ?? '').trim() : ''
           const t0 = await A.promptDlg({
             title: 'Create a Jira work item',
             description: file ? `From this finding · ${file.slice(0, 80)}` : 'From this finding',
@@ -59,12 +81,16 @@ export function ReportView({ refId, full, onClose, refresh }: {
           if (!t0) return
           void A.run({ action: 'ticket', ref: refId, title: t0, body: (file ? `File: ${file}\n\n` : '') + find }, () => void load(view))
         }
-        const c = document.createElement('td')
-        c.appendChild(b)
-        tr.appendChild(c)
+        const db = document.createElement('button')
+        db.textContent = 'discard'
+        db.title = 'hide this finding from the report and the posted review (undoable)'
+        db.className = 'ml-1 h-6 px-2 text-xs rounded border border-border bg-card text-muted-foreground hover:border-destructive/60 hover:text-destructive cursor-pointer whitespace-nowrap'
+        db.onclick = () => void A.run({ action: 'fdiscard', ref: refId, fkey, excerpt: find.slice(0, 300), view: r.view }, () => void load(view))
+        cell.append(jb, db)
+        tr.appendChild(cell)
       })
     })
-  }, [r?.html]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [r?.html, r?.discards]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!r) return <Card className="text-xs text-muted-foreground">loading…</Card>
 

@@ -84,6 +84,16 @@ CREATE TABLE IF NOT EXISTS pr_tickets (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS pr_finding_discards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_id INTEGER NOT NULL REFERENCES pr_reviews(id),
+    fkey TEXT NOT NULL,
+    excerpt TEXT,
+    view TEXT NOT NULL DEFAULT 'original',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(review_id, fkey, view)
+);
+
 CREATE TABLE IF NOT EXISTS pr_settings (
     key TEXT PRIMARY KEY,
     value TEXT,

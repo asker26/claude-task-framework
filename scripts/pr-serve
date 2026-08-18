@@ -35,6 +35,8 @@ ACTIONS = {  # action → prctl argv builder (only these are reachable from the 
     "optimize": lambda p: ["optimize", p["ref"]],
     "merge":    lambda p: ["merge", p["ref"], "--yes"] + (["--admin"] if p.get("admin") else []),
     "ticket":   lambda p: ["ticket", p["ref"], "--title", str(p["title"])[:250], "--body", str(p.get("body", ""))[:6000]],
+    "fdiscard": lambda p: ["fdiscard", p["ref"], str(p["fkey"])[:200], "--excerpt", str(p.get("excerpt", ""))[:400], "--view", ("optimized" if p.get("view") == "optimized" else "original")],
+    "frestore": lambda p: ["frestore", p["ref"], str(p["fkey"])[:200], "--view", ("optimized" if p.get("view") == "optimized" else "original")],
     "skip":     lambda p: ["skip", p["ref"]] + (["--days", str(int(p["days"]))] if p.get("days") else []),
     "unskip":   lambda p: ["unskip", p["ref"]],
     "sync":     lambda p: ["sync"],
@@ -193,6 +195,7 @@ def report(ref, view=""):
     except OSError:
         return {"error": "report file missing", **r}
     r["tickets"] = rows("SELECT jira_key, title, url, created_at FROM pr_tickets WHERE pr_id = (SELECT id FROM prs WHERE repo = ? COLLATE NOCASE AND number = ?) ORDER BY id DESC", (repo, int(m.group(3))))
+    r["discards"] = rows("SELECT fkey, excerpt, view FROM pr_finding_discards WHERE review_id = ?", (r["id"],))
     opt_path = r["report_path"][:-3] + "-opt.md"
     r["has_optimized"] = os.path.exists(opt_path)
     r["view"] = "original"
