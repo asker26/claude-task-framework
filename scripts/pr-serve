@@ -293,10 +293,11 @@ def run_action(payload):
         argv = [PRCTL] + ACTIONS[action](payload)
     except (KeyError, ValueError) as e:
         return 400, {"ok": False, "output": f"bad payload: {e}"}
+    timeout = 600 if action in ("optimize", "post", "merge") else 180
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL)
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return 504, {"ok": False, "output": "prctl timed out"}
+        return 504, {"ok": False, "output": f"prctl {action} timed out after {timeout}s — it may still finish in the background; reload in a minute"}
     return (200 if p.returncode == 0 else 500), {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()[-4000:]}
 
 
