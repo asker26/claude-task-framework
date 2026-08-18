@@ -12,6 +12,7 @@ usage: prctl <command> [args]
   review <ref> [--now] [--notes "…"]               queue a reviewer-ultra run (notes = directions injected into the review prompt)
   abort <ref>                                      kill the running review of this PR (no requeue)
   takeover <ref> [--notes "…"]                     interactive review session in tmux + Terminal window (you direct the agent)
+  work <ref> [--notes "…"]                         interactive session ON the PR branch (own worktree) — fix findings, change code, push
   staged | read <ref> | edit <ref>                 staged reports
   optimize <ref>                                   compact the report (drop none-found/process noise) → <report>-opt.md
   post <ref> [--verdict A|RC|C] [--full|--optimized] [--yes] [--force]
@@ -76,17 +77,19 @@ section() {  # title, status filter SQL, extra where
   rows="$(sqlite3 -cmd '.timeout 5000' -readonly -separator $'\x1f' "$DB" "
     SELECT repo, number, status, COALESCE(active_review_verdict, ''), COALESCE(active_review_behind, 0), stale, ready,
            conflicts, ci_red, too_big, COALESCE(age_days, 0), COALESCE(waiting_days, 0), COALESCE(author, ''), COALESCE(claims, ''),
-           COALESCE(checks, ''), COALESCE(review_decision, ''), COALESCE(title, '')
+           COALESCE(checks, ''), COALESCE(review_decision, ''),
+           COALESCE(changed_files, 0) || 'f +' || COALESCE(additions, 0) || '/-' || COALESCE(deletions, 0),
+           COALESCE(title, '')
     FROM pr_board WHERE ($3) AND ($2)
     ORDER BY stale DESC, age_days DESC, repo, number;")"
   [[ -n "$rows" ]] || return 0
-  cols="$(tput cols 2>/dev/null || echo 120)"; title_w=$(( cols - 90 )); (( title_w < 20 )) && title_w=20
+  cols="$(tput cols 2>/dev/null || echo 120)"; title_w=$(( cols - 105 )); (( title_w < 20 )) && title_w=20
   echo "$1"
-  while IFS=$'\x1f' read -r repo num status verdict behind stale ready conflicts ci_red too_big age waiting author claims checks decision title; do
-    printf '  %-28s %-20s %4s  %-12s %-20s %s\n' \
+  while IFS=$'\x1f' read -r repo num status verdict behind stale ready conflicts ci_red too_big age waiting author claims checks decision size title; do
+    printf '  %-28s %-20s %4s  %-14s %-12s %-20s %s\n' \
       "$(pr_ref_short "$repo" "$num")" \
       "$(row_status_text "$status" "$verdict" "$behind" "$ready" "$waiting" "$decision")" \
-      "${age}d" "${author:0:12}" \
+      "${age}d" "${size:0:14}" "${author:0:12}" \
       "$(row_flags "$stale" "$conflicts" "$ci_red" "$checks" "$status" "$claims" "$too_big" | cut -c1-20)" \
       "${title:0:$title_w}"
   done <<< "$rows"
@@ -274,6 +277,42 @@ cmd_merge() {
   sql "UPDATE prs SET state = 'merged', synced_at = CURRENT_TIMESTAMP WHERE id = $id;
        UPDATE pr_reviews SET status = 'discarded', error = 'pr merged', finished_at = CURRENT_TIMESTAMP WHERE pr_id = $id AND status IN ('queued', 'staged');"
   echo "merged $(pr_ref_short "$repo" "$num") ($method${delete_branch:+, deleted $head_ref})"
+}
+
+cmd_work() {
+  local id notes="" repo num title head_ref dir wt="" cwd rid rpath="" prompt win
+  id="$(pr_id_or_die "$1")"; shift
+  [[ "${1:-}" == "--notes" ]] && notes="${2:-}"
+  IFS='|' read -r repo num title head_ref < <(sql_ro "SELECT repo, number, COALESCE(title,''), COALESCE(head_ref,'') FROM prs WHERE id = $id;")
+  dir="$(resolve_work_dir "$repo")"
+  if [[ "$dir" != "$ROOT" && -e "$dir/.git" && -n "$head_ref" ]]; then
+    wt="$ROOT/.workspaces/pr-${repo#*/}-$num"
+    if [[ ! -d "$wt" ]]; then
+      git -C "$dir" fetch origin "$head_ref" >/dev/null 2>&1 || true
+      git -C "$dir" worktree add "$wt" "$head_ref" >/dev/null 2>&1 \
+        || git -C "$dir" worktree add -b "$head_ref" "$wt" "origin/$head_ref" >/dev/null 2>&1 \
+        || wt=""
+    fi
+  fi
+  cwd="${wt:-$dir}"
+  rid="$(latest_review_id "$id" "'staged'")"; [[ -n "$rid" ]] || rid="$(latest_review_id "$id" "'posted'")"
+  [[ -n "$rid" ]] && rpath="$(review_field "$rid" report_path)"
+  prompt="Working session on PR #$num of $repo — '$title' (branch $head_ref)."
+  if [[ -n "$wt" ]]; then prompt="$prompt This is a dedicated git worktree already on that branch; commit and push to $head_ref as directed."
+  else prompt="$prompt WARNING: no worktree could be created — do NOT switch branches in this checkout; create a worktree yourself if you need the branch."
+  fi
+  [[ -n "$rpath" && -f "$rpath" ]] && prompt="$prompt The staged review report is at $rpath — read it before changing anything."
+  prompt="$prompt The lead will direct you (fix findings, change code, answer questions). Never merge, post reviews, or push without an explicit go.${notes:+ Initial directions: $notes}"
+  win="work-${repo#*/}-$num"
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+  if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
+    tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$cwd" \
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude $(printf '%q' "$prompt")"
+  fi
+  if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
+    osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+  fi
+  echo "work session in tmux $TMUX_SESSION:$win · cwd $cwd${wt:+ (worktree on $head_ref — remove later: git -C $dir worktree remove $wt)}"
 }
 
 # ---------------------------------------------------------------- skip / config
@@ -547,6 +586,7 @@ case "$cmd" in
   review)  cmd_review "${1:?ref required}" "${@:2}" ;;
   abort)   cmd_abort "${1:?ref required}" ;;
   takeover) cmd_takeover "${1:?ref required}" "${@:2}" ;;
+  work)    cmd_work "${1:?ref required}" "${@:2}" ;;
   staged)  cmd_staged ;;
   read)    cmd_read "${1:?ref required}" ;;
   optimize) cmd_optimize "${1:?ref required}" ;;

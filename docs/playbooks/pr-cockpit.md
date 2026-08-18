@@ -115,6 +115,11 @@ A worker review is headless — it takes no input mid-flight. The three controls
 - **Take over**: `prctl takeover <ref> [--notes "…"]` (or *Take over*) opens an interactive Claude session in a
   tmux window in the repo (a Terminal window attaches automatically) — it starts `/reviewer-ultra` and follows
   your directions live; it never posts unless you say so.
+- **Work on it**: `prctl work <ref> [--notes "…"]` (or *Work on it*) — an interactive session ON the PR branch,
+  checked out in a dedicated worktree under `.workspaces/pr-<repo>-<n>` (your main checkout is never touched;
+  falls back to the repo dir with a don't-switch-branches warning when no worktree is possible). It gets the
+  staged report path so "fix findings 1 and 3" works directly; it never pushes/merges without an explicit go.
+  Clean up later: `git -C <repo> worktree remove .workspaces/pr-…` (or /ctf-clean).
 
 If a runner dies mid-review (Mac sleep is the usual killer), nothing is lost: reviews run under `caffeinate`,
 and the reaper stages a finished report it finds instead of re-running (`error: runner died; report salvaged`).

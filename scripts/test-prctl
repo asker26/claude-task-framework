@@ -340,6 +340,10 @@ rm -f "$FAKE_DIR/tmux-new-window.log"
 CTF_NO_TERMINAL=1 "$PRCTL" takeover alpha#3 --notes "check the cache" >/dev/null 2>&1
 chk "takeover opens a tmux window"      "grep -q 'take-alpha-3' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null && grep -q 'check.*cache' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
 db "UPDATE pr_reviews SET status='discarded' WHERE status IN ('queued','running','staged') AND pr_id IN ($(pid_of alpha 11), $(pid_of alpha 3));"
+rm -f "$FAKE_DIR/tmux-new-window.log"
+CTF_NO_TERMINAL=1 "$PRCTL" work beta#1 --notes "rename the endpoint" > "$TMP/work.out" 2>&1 
+chk "work opens a tmux session"         "LC_ALL=C grep -q 'work-beta-1' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null && LC_ALL=C grep -q 'rename.*endpoint' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
+chk "work warns when no worktree"       "LC_ALL=C grep -q 'switch.*branches' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
 rm -f "$FAKE_DIR/bin/tmux"
 chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
 chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"

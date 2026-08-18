@@ -184,7 +184,7 @@ A Claude session is NOT needed to run reviews — the worker runs them headlessl
 scripts/prctl board                 # NEEDS YOU · WAITING ON AUTHOR · APPROVED · MINE  (--repo X, --all, --fresh, --json)
 scripts/prctl show bookneticsaas#3128
 scripts/prctl review bookneticsaas#3128 [--now] [--notes "…"]   # queue for the worker / run here; notes = directions for the reviewer
-scripts/prctl abort <ref> | takeover <ref> [--notes "…"]         # kill a running review / open an interactive session you direct (tmux+Terminal)
+scripts/prctl abort <ref> | takeover <ref> | work <ref> [--notes "…"]  # kill a running review / interactive review session / interactive session ON the PR branch (worktree)
 scripts/prctl staged | read <ref> | edit <ref> | optimize <ref>   # optimize = compact report (verdict+findings only) → -opt.md; post --optimized
 scripts/prctl post <ref> [--verdict A|RC|C] [--full] [--yes]   # gh pr review, human-approved, under your account
 scripts/prctl merge <ref> [--method merge|squash|rebase] [--admin] [--keep-branch]  # human-confirmed merge; deletes head branch (kept for main/master/develop*/release*)
