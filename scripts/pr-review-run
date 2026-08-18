@@ -39,6 +39,9 @@ Run every subagent in the FOREGROUND — never pass run_in_background — and do
 SEVERITY BAR for the final report: a numbered finding must name a concrete user action or code path that breaks, or a real defect with a code fix. NEVER report as findings: requests for explanation ('state intent', empty PR body), TDD/process compliance, missing tests, style drift, or narrow theoretical races. If worth mentioning at all, compress those into one short 'Process notes:' line at the end — they must not affect the verdict.
 When the final report is complete, write it VERBATIM to ${report} (markdown; it must contain the '**Verdict:**' line with exactly one of BLOCK, REQUEST_CHANGES, APPROVE_WITH_COMMENTS), then reply with the single line REPORT_WRITTEN.
 Do not post anything to GitHub. Do not modify any file other than ${report}."
+notes="$(sql_ro "SELECT COALESCE(notes, '') FROM pr_reviews WHERE id = $review_id;")"
+[[ -n "$notes" ]] && prompt="$prompt
+ADDITIONAL DIRECTIONS from the lead — they override the defaults above where they conflict: $notes"
 
 register_worker_session() {
   local sid; sid="$(sql_str "$1")"
@@ -64,7 +67,7 @@ finish_failed() {  # error, bump_attempts(0|1), requeue(0|1)
   release_worker_session
   att="$(sql_ro "SELECT attempts FROM pr_reviews WHERE id = $review_id;")"
   if [[ "$3" == 1 ]] && (( att < 2 )); then
-    sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) VALUES ($pr_id, $(sql_str "$head_sha"), 'queued', $att);"
+    sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts, notes) SELECT pr_id, head_sha, 'queued', $att, notes FROM pr_reviews WHERE id = $review_id;"
     echo "requeued (attempt $att)"
   fi
   echo "=== failed: $1 ==="
@@ -85,8 +88,9 @@ echo "=== review $review_id · $short · ${head_sha:0:7} · model $model · cwd 
 heartbeat_pid=$!
 trap 'pkill -P "$heartbeat_pid" 2>/dev/null; kill "$heartbeat_pid" 2>/dev/null || true' EXIT
 
+CAFF=(); command -v caffeinate >/dev/null 2>&1 && CAFF=(caffeinate -is)   # Mac sleep kills long review sessions
 set +eo pipefail
-env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
+"${CAFF[@]}" env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
   claude --dangerously-skip-permissions -p --output-format stream-json --verbose --model "$model" "$prompt" 2>&1 \
 | while IFS= read -r line; do
     printf '%s\n' "$line" | tee -a "$log"

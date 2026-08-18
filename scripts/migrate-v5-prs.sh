@@ -12,6 +12,11 @@ if [[ ! -f "$DB" ]]; then
   exit 1
 fi
 
+if [[ -n "$(sqlite3 "$DB" "SELECT 1 FROM pragma_table_info('pr_reviews') WHERE name IS NOT NULL LIMIT 1;" 2>/dev/null)" ]] \
+   && [[ -z "$(sqlite3 "$DB" "SELECT 1 FROM pragma_table_info('pr_reviews') WHERE name='notes';")" ]]; then
+  sqlite3 "$DB" "ALTER TABLE pr_reviews ADD COLUMN notes TEXT;"
+fi
+
 sqlite3 "$DB" <<'SQL'
 CREATE TABLE IF NOT EXISTS prs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,7 +50,8 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     error TEXT,
     queued_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME, posted_at DATETIME,
-    gh_review_id INTEGER
+    gh_review_id INTEGER,
+    notes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr_status ON pr_reviews(pr_id, status);
 

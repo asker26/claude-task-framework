@@ -214,7 +214,8 @@ CREATE TABLE IF NOT EXISTS pr_reviews (
     error TEXT,
     queued_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     started_at DATETIME, finished_at DATETIME, posted_at DATETIME,
-    gh_review_id INTEGER
+    gh_review_id INTEGER,
+    notes TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr_status ON pr_reviews(pr_id, status);
 

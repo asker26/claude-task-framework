@@ -33,19 +33,28 @@ release_review_session() {  # review_id
        UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $1 AND cli_session_id IS NOT NULL);"
 }
 reap_stuck() {
-  local rid prid win pid att
-  while IFS='|' read -r rid prid win pid att; do
+  local rid prid win pid att rpath verdict
+  while IFS='|' read -r rid prid win pid att rpath; do
     [[ -n "$rid" ]] || continue
     kill_review_procs "$pid"
     if [[ -n "$win" ]]; then tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true; fi
+    if [[ -n "$rpath" && -s "$rpath" ]] && grep -q '\*\*Verdict:\*\*' "$rpath"; then
+      # the runner died but the report is complete — stage it instead of burning a re-run
+      verdict="$(report_verdict "$rpath")"
+      sql "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$verdict"), finished_at = CURRENT_TIMESTAMP, error = 'runner died; report salvaged' WHERE id = $rid;"
+      release_review_session "$rid"
+      notify_local "PR review staged (salvaged)" "$(sql_ro "SELECT substr(repo, instr(repo,'/')+1)||'#'||number FROM prs WHERE id = $prid;") · ${verdict:-?}"
+      echo "salvaged review $rid → staged ${verdict:-?}"
+      continue
+    fi
     att=$((att + 1))
     sql "UPDATE pr_reviews SET status = 'failed', error = 'stuck', attempts = $att, finished_at = CURRENT_TIMESTAMP WHERE id = $rid;"
     release_review_session "$rid"
     if (( att < 2 )); then
-      sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts) SELECT pr_id, head_sha, 'queued', $att FROM pr_reviews WHERE id = $rid;"
+      sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts, notes) SELECT pr_id, head_sha, 'queued', $att, notes FROM pr_reviews WHERE id = $rid;"
     fi
     echo "reaped stuck review $rid (attempt $att)"
-  done < <(sql_ro "SELECT id, pr_id, COALESCE(tmux_window, ''), COALESCE(pid, ''), attempts FROM pr_reviews
+  done < <(sql_ro "SELECT id, pr_id, COALESCE(tmux_window, ''), COALESCE(pid, ''), attempts, COALESCE(report_path, '') FROM pr_reviews
                    WHERE status = 'running' AND heartbeat_at < datetime('now', '-$STUCK_MIN minutes');")
 }
 cooldown_active() {

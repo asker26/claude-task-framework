@@ -9,7 +9,9 @@ usage: prctl <command> [args]
   board [--repo X] [--all] [--fresh] [--json]      what needs you · waiting on author · approved · mine
   show <ref>                                       one PR: fields, my reviews, claims
   sync [--repo X]                                  pull from GitHub now
-  review <ref> [--now]                             queue a reviewer-ultra run for the worker, or run it here
+  review <ref> [--now] [--notes "…"]               queue a reviewer-ultra run (notes = directions injected into the review prompt)
+  abort <ref>                                      kill the running review of this PR (no requeue)
+  takeover <ref> [--notes "…"]                     interactive review session in tmux + Terminal window (you direct the agent)
   staged | read <ref> | edit <ref>                 staged reports
   optimize <ref>                                   compact the report (drop none-found/process noise) → <report>-opt.md
   post <ref> [--verdict A|RC|C] [--full|--optimized] [--yes] [--force]
@@ -138,16 +140,53 @@ cmd_show() {
 
 # ---------------------------------------------------------------- reviews
 cmd_review() {
-  local id now=0 sha rid
+  local id now=0 notes="" sha rid
   id="$(pr_id_or_die "$1")"; shift
-  [[ "${1:-}" == "--now" ]] && now=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in --now) now=1; shift ;; --notes) notes="$2"; shift 2 ;; *) echo "unknown option $1" >&2; exit 1 ;; esac
+  done
   if [[ -n "$(latest_review_id "$id" "'queued','running'")" ]]; then
     echo "$(pr_ref_of_id "$id") already has a queued/running review (prctl show)" >&2; exit 1
   fi
   sha="$(sql_ro "SELECT head_sha FROM prs WHERE id = $id;")"
-  rid="$(sql "INSERT INTO pr_reviews (pr_id, head_sha, status) VALUES ($id, $(sql_str "$sha"), 'queued'); SELECT last_insert_rowid();")"
+  rid="$(sql "INSERT INTO pr_reviews (pr_id, head_sha, status, notes) VALUES ($id, $(sql_str "$sha"), 'queued', $(sql_str "$notes")); SELECT last_insert_rowid();")"
   if [[ "$now" == 1 ]]; then exec "$ROOT/scripts/pr-review-run" "$id" --review-id "$rid"; fi
-  echo "queued review $rid for $(pr_ref_of_id "$id") — the worker picks it next (prctl worker status)"
+  echo "queued review $rid for $(pr_ref_of_id "$id")${notes:+ with directions} — the worker picks it next"
+}
+resolve_work_dir() {  # Org/repo → project local_path or $ROOT
+  local d
+  d="$(sql_ro "SELECT local_path FROM projects WHERE local_path IS NOT NULL AND (github_repo LIKE '%$(sql_esc "$1")' COLLATE NOCASE OR github_repo LIKE '%$(sql_esc "$1").git' COLLATE NOCASE) LIMIT 1;")"
+  d="${d/#\~/$HOME}"
+  if [[ -n "$d" && -d "$d" ]]; then printf '%s' "$d"; else printf '%s' "$ROOT"; fi
+}
+cmd_abort() {
+  local id rid pid win
+  id="$(pr_id_or_die "$1")"
+  IFS='|' read -r rid pid win < <(sql_ro "SELECT id, COALESCE(pid,''), COALESCE(tmux_window,'') FROM pr_reviews WHERE pr_id = $id AND status = 'running' ORDER BY id DESC LIMIT 1;") || true
+  [[ -n "${rid:-}" ]] || { echo "no running review for $(pr_ref_of_id "$id")" >&2; exit 1; }
+  if [[ -n "$pid" ]]; then pkill -TERM -P "$pid" 2>/dev/null || true; kill -TERM "$pid" 2>/dev/null || true; fi
+  [[ -n "$win" ]] && tmux kill-window -t "$TMUX_SESSION:$win" 2>/dev/null || true
+  sql "UPDATE pr_reviews SET status = 'failed', error = 'aborted by user', finished_at = CURRENT_TIMESTAMP WHERE id = $rid;
+       UPDATE pr_claims SET released_at = CURRENT_TIMESTAMP WHERE released_at IS NULL AND session_id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $rid);
+       UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $rid AND cli_session_id IS NOT NULL);"
+  echo "aborted review $rid for $(pr_ref_of_id "$id") — requeue with: prctl review $(pr_ref_of_id "$id") [--notes …]"
+}
+cmd_takeover() {
+  local id notes="" repo num dir win
+  id="$(pr_id_or_die "$1")"; shift
+  [[ "${1:-}" == "--notes" ]] && notes="${2:-}"
+  IFS='|' read -r repo num < <(sql_ro "SELECT repo, number FROM prs WHERE id = $id;")
+  dir="$(resolve_work_dir "$repo")"
+  win="take-${repo#*/}-$num"
+  tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+  if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
+    tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$dir" \
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude $(printf '%q' "Interactive review of PR #$num of $repo, directed by the lead. Start with /reviewer-ultra $num $repo and adjust to my directions as we go. Do not post to GitHub unless I explicitly say so.${notes:+ Initial directions: $notes}")"
+  fi
+  if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
+    osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
+  fi
+  echo "takeover session in tmux $TMUX_SESSION:$win (attach: tmux attach -t $TMUX_SESSION:$win)"
 }
 cmd_staged() {
   sql_table "SELECT r.id, substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number AS ref, COALESCE(r.verdict, '?') AS verdict,
@@ -506,6 +545,8 @@ case "$cmd" in
   show)    cmd_show "${1:?ref required}" ;;
   sync)    "$ROOT/scripts/pr-sync" "$@" ;;
   review)  cmd_review "${1:?ref required}" "${@:2}" ;;
+  abort)   cmd_abort "${1:?ref required}" ;;
+  takeover) cmd_takeover "${1:?ref required}" "${@:2}" ;;
   staged)  cmd_staged ;;
   read)    cmd_read "${1:?ref required}" ;;
   optimize) cmd_optimize "${1:?ref required}" ;;

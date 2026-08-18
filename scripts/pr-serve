@@ -23,7 +23,9 @@ TMUX_SESSION = os.environ.get("CTF_TMUX_SESSION", "ctf-agents")
 ACTIONS = {  # action → prctl argv builder (only these are reachable from the page)
     "post":     lambda p: ["post", p["ref"], "--yes"] + (["--verdict", p["verdict"]] if p.get("verdict") else []) + (["--full"] if p.get("full") else []) + (["--optimized"] if p.get("optimized") else []),
     "discard":  lambda p: ["discard", p["ref"], "--reason", p.get("reason") or "discarded from UI"],
-    "review":   lambda p: ["review", p["ref"]],
+    "review":   lambda p: ["review", p["ref"]] + (["--notes", str(p["notes"])[:2000]] if p.get("notes") else []),
+    "abort":    lambda p: ["abort", p["ref"]],
+    "takeover": lambda p: ["takeover", p["ref"]] + (["--notes", str(p["notes"])[:2000]] if p.get("notes") else []),
     "optimize": lambda p: ["optimize", p["ref"]],
     "merge":    lambda p: ["merge", p["ref"], "--yes"] + (["--admin"] if p.get("admin") else []),
     "skip":     lambda p: ["skip", p["ref"]] + (["--days", str(int(p["days"]))] if p.get("days") else []),
@@ -347,16 +349,21 @@ const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&g
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',6000)}
 async function act(p){toast('… '+p.action+(p.ref?' '+p.ref:''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);await load();if(sel)openReport(sel)}
 function workerToggle(){act({action:'worker',mode:S&&S.worker_running?'stop':'start'})}
+function queueReview(ref){const n=prompt('Directions for the reviewer (optional — e.g. "focus on the payment flow, ignore CSS")','');if(n===null)return;act({action:'review',ref,notes:n||undefined})}
+function takeOver(ref){const n=prompt('Initial directions for your interactive session (optional)','');if(n===null)return;act({action:'takeover',ref,notes:n||undefined})}
 function tags(b){let t='';if(b.stale)t+='<span class="tag stale">STALE</span>';if(b.conflicts)t+='<span class="tag red">conflicts</span>';if(b.ci_red)t+='<span class="tag red">ci-red</span>';if(b.checks==='SUCCESS'&&(b.status==='approved'||b.status==='mine'))t+='<span class="tag ok">green</span>';if(b.too_big)t+='<span class="tag">too-big</span>';if(b.claims)t+='<span class="tag claim">s:'+esc(b.claims)+'</span>';return t}
 function stext(b){if(b.status==='staged')return 'staged '+(b.active_review_verdict||'?')+(b.active_review_behind?' (behind)':'');if(b.status==='waiting-author')return 'waiting '+b.waiting_days+'d';if(b.status==='approved')return b.ready?'ready ✓':'approved';if(b.status==='mine')return b.ready?'ready ✓':(b.review_decision||'no-review').toLowerCase();return b.status}
 function mergeBtn(b){return `<button class="danger" onclick="event.stopPropagation();if(confirm('Merge ${b.ref} on GitHub?'))act({action:'merge',ref:'${b.ref}'})">merge</button> `}
-function rowBtns(b){let h='';if((b.status==='approved'||b.status==='mine')&&b.ready)h+=mergeBtn(b);if(b.status==='staged')h+=`<button class="primary" onclick="event.stopPropagation();openReport('${b.ref}')">read</button> `;if(['needs-review','re-review','author-replied','review-failed','commented','waiting-author','approved'].includes(b.status))h+=`<button onclick="event.stopPropagation();act({action:'review',ref:'${b.ref}'})">queue review</button> `;if(b.status==='skipped')h+=`<button onclick="event.stopPropagation();act({action:'unskip',ref:'${b.ref}'})">unskip</button> `;else if(b.status!=='mine')h+=`<button onclick="event.stopPropagation();act({action:'skip',ref:'${b.ref}',days:7})">skip 7d</button>`;return h}
+function rowBtns(b){let h='';if((b.status==='approved'||b.status==='mine')&&b.ready)h+=mergeBtn(b);if(b.status==='staged')h+=`<button class="primary" onclick="event.stopPropagation();openReport('${b.ref}')">read</button> `;if(['needs-review','re-review','author-replied','review-failed','commented','waiting-author','approved'].includes(b.status))h+=`<button onclick="event.stopPropagation();queueReview('${b.ref}')">queue review</button> `;if(b.status==='skipped')h+=`<button onclick="event.stopPropagation();act({action:'unskip',ref:'${b.ref}'})">unskip</button> `;else if(b.status!=='mine')h+=`<button onclick="event.stopPropagation();act({action:'skip',ref:'${b.ref}',days:7})">skip 7d</button>`;return h}
 const gh=b=>b.url?`<a class="gh" href="${esc(b.url)}" target="_blank" title="open on GitHub" onclick="event.stopPropagation()">↗</a>`:'';
 function section(title,items){if(!items.length)return '';return `<h2>${title}</h2><table class="board">`+items.map(b=>`<tr class="${sel===b.ref?'sel':''}" onclick="openReport('${b.ref}')"><td><span class="ref">${esc(b.ref)}</span> ${gh(b)}</td><td class="status st-${b.status}">${esc(stext(b))}</td><td>${b.age_days}d</td><td>${esc(b.author||'')}</td><td>${tags(b)}</td><td class="title">${esc(b.title||'')}</td><td>${rowBtns(b)}</td></tr>`).join('')+'</table>'}
 function render(){if(!S)return;document.getElementById('org').textContent=S.org;document.getElementById('clock').textContent=S.now;
  document.getElementById('hdr').textContent=`synced ${S.synced_min==null?'?':S.synced_min}m ago · worker: ${S.worker} · model ${S.model}`;
  document.getElementById('wbtn').textContent=S.worker_running?'Stop worker':'Start worker (auto)';
- document.getElementById('running').innerHTML=S.running.length?S.running.map(r=>`<div class="card run"><b>RUNNING</b> <span class="ref" onclick="openLog('${r.ref}')">${esc(r.ref)}</span> · ${r.mins}m · agents ${r.agents} · heartbeat ${r.hb_s}s ago<div class="act">${esc(r.last_action||'')}</div></div>`).join(''):'<div class="card small">worker idle — nothing running</div>';
+ document.getElementById('running').innerHTML=S.running.length?S.running.map(r=>`<div class="card run"><b>RUNNING</b> <span class="ref" onclick="openLog('${r.ref}')">${esc(r.ref)}</span> · ${r.mins}m · agents ${r.agents} · heartbeat ${r.hb_s}s ago
+ <button onclick="if(confirm('Abort the running review of ${r.ref}?'))act({action:'abort',ref:'${r.ref}'})">abort</button>
+ <button onclick="takeOver('${r.ref}')" title="abort it yourself first if you want a clean takeover">take over</button>
+ <div class="act">${esc(r.last_action||'')}</div></div>`).join(''):'<div class="card small">worker idle — nothing running</div>';
  document.getElementById('staged').innerHTML=S.staged.length?`<table class="board">`+S.staged.map(s=>`<tr class="${sel===s.ref?'sel':''}" onclick="openReport('${s.ref}')"><td><span class="ref">${esc(s.ref)}</span> ${gh(s)}</td><td class="status st-staged">${esc(s.verdict||'?')}${s.behind?' (behind)':''}</td><td>${s.mins_ago}m ago</td><td>${esc(s.author||'')}</td><td class="title">${esc(s.title||'')}</td><td><button class="primary" onclick="event.stopPropagation();openReport('${s.ref}')">read</button> <a href="/report?ref=${encodeURIComponent(s.ref)}" target="_blank" onclick="event.stopPropagation()"><button>full page ↗</button></a></td></tr>`).join('')+'</table>':'<div class="small">nothing staged</div>';
  document.getElementById('queue').innerHTML=S.queue.length?S.queue.map(q=>`<div><span class="ref" onclick="openReport('${q.ref}')">${esc(q.ref)}</span> queued ${q.mins}m ago${q.attempts?' · attempt '+(q.attempts+1):''} <button onclick="act({action:'discard',ref:'${q.ref}',reason:'dequeued from UI'})">dequeue</button></div>`).join(''):'(empty)';
  const by=st=>S.board.filter(b=>st.includes(b.status));
@@ -367,7 +374,7 @@ async function load(){try{S=await (await fetch('/api/state')).json();render()}ca
 function closeReport(){sel=null;document.querySelector('main').classList.remove('split');render()}
 async function openReport(ref,view){sel=ref;render();document.querySelector('main').classList.add('split');const r=await (await fetch('/api/report?ref='+encodeURIComponent(ref)+(view?'&view='+view:''))).json();const el=document.getElementById('report');
  if(r.error){el.innerHTML=`<div class="card"><b>${esc(ref)}</b>${r.url?` · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'open on GitHub')} ↗</a>`:''}${r.author?` · ${esc(r.author)}`:''}${r.status?` · <span class="status st-${esc(r.status)}">${esc(r.status)}</span>`:''}<br><span class="small">${esc(r.error)}</span>
- <div class="actions"><button class="primary" onclick="act({action:'review',ref:'${ref}'})">queue review</button> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
+ <div class="actions"><button class="primary" onclick="queueReview('${ref}')">queue review</button> <button onclick="takeOver('${ref}')">take over</button> <button onclick="openLog('${ref}')">session log</button> <button onclick="closeReport()">close</button></div></div>`;return}
  const canPost=r.status==='staged';const v=r.verdict||'';
  el.innerHTML=`<div class="card"><b>${esc(r.ref)}</b> · <a href="${esc(r.url)}" target="_blank" style="color:var(--acc)">${esc(r.title||'')}</a> · ${esc(r.author||'')}<br>
  <span class="small">review ${r.id} · ${esc(r.status)} · verdict <b>${esc(v||'unparsed')}</b> · reviewed ${esc((r.head_sha||'').slice(0,7))}${r.behind?' <span class="tag stale">behind head '+esc((r.pr_head||'').slice(0,7))+'</span>':''}${r.has_optimized?' · viewing <b>'+r.view+'</b>':''} · ${esc((r.finished_at||''))}</span>
@@ -380,6 +387,7 @@ async function openReport(ref,view){sel=ref;render();document.querySelector('mai
  ${r.has_optimized?`<button onclick="openReport('${r.ref}','${r.view==='optimized'?'original':'optimized'}')">view ${r.view==='optimized'?'original':'optimized'}</button> <button onclick="act({action:'optimize',ref:'${r.ref}'})">Re-optimize</button>`:`<button onclick="act({action:'optimize',ref:'${r.ref}'})">Optimize</button>`}
  <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a>
  <button class="danger" onclick="mergeIt('${r.ref}')">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label>
+ <button onclick="takeOver('${r.ref}')">Take over</button>
  <button onclick="closeReport()">Close</button></div></div>
  <div class="body">${r.html}</div>`}
 function mergeIt(ref){const a=document.getElementById('madmin');if(!confirm('Merge '+ref+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref,admin:!!(a&&a.checked)})}
@@ -402,6 +410,7 @@ function toast(t){const e=document.getElementById('toast');e.textContent=t;e.sty
 async function act(p){toast('… '+p.action+' '+(p.ref||''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);if(j.ok)setTimeout(()=>location.reload(),1200)}
 function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked,o=document.getElementById('vopt');if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full,optimized:!!(o&&o.checked)})}
 function mergeIt(){const a=document.getElementById('madmin');if(!confirm('Merge '+REF+' on GitHub'+(a&&a.checked?' (admin)':'')+'?'))return;act({action:'merge',ref:REF,admin:!!(a&&a.checked)})}
+function takeOver(){const n=prompt('Initial directions for your interactive session (optional)','');if(n===null)return;act({action:'takeover',ref:REF,notes:n||undefined})}
 </script></body></html>"""
 
 
@@ -433,7 +442,8 @@ def report_page(ref, view=""):
         else:
             actions += '<button onclick="act({action:\'optimize\',ref:REF})">Optimize</button> '
         actions += ('<button class="danger" onclick="mergeIt()">Merge PR</button> <label class="small"><input type="checkbox" id="madmin"> admin</label> '
-                    '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> <a href="/"><button>back to cockpit</button></a>')
+                    '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> '
+                    '<button onclick="takeOver()">Take over</button> <a href="/"><button>back to cockpit</button></a>')
         viewing = f' · viewing <b>{r["view"]}</b>' if r.get("has_optimized") else ""
         card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
                 f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind}{viewing} · {html.escape(r.get("finished_at") or "")}</span>'

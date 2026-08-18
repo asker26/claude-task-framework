@@ -105,6 +105,20 @@ verdict + concrete findings only, all "none found"/process narration dropped —
 The UI then defaults to the optimized view (toggle to original any time) and pre-checks **post optimized**;
 CLI: `prctl post <ref> --optimized`. Runs one small headless call on the configured worker model (~1 min).
 
+## Steering a review
+
+A worker review is headless — it takes no input mid-flight. The three controls, all on the UI too:
+
+- **Directions at queue time**: `prctl review <ref> --notes "focus on the payment flow, ignore CSS"` — injected
+  into the review prompt as lead directions (the *queue review* buttons ask for them). Requeues keep the notes.
+- **Abort**: `prctl abort <ref>` (or the *abort* button on the running card) kills the run, no requeue.
+- **Take over**: `prctl takeover <ref> [--notes "…"]` (or *Take over*) opens an interactive Claude session in a
+  tmux window in the repo (a Terminal window attaches automatically) — it starts `/reviewer-ultra` and follows
+  your directions live; it never posts unless you say so.
+
+If a runner dies mid-review (Mac sleep is the usual killer), nothing is lost: reviews run under `caffeinate`,
+and the reaper stages a finished report it finds instead of re-running (`error: runner died; report salvaged`).
+
 ## Sessions and claims
 
 When you start working on a PR in a Claude session: `!prctl claim <ref>` (optionally `--note "…"`).

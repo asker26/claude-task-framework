@@ -324,6 +324,22 @@ rm -f "$FAKE_DIR/tmux-new-window.log"; "$WORKER" cycle --queue-only >/dev/null 2
 chk "multi-slot cycle launches each queued review once" "[[ \$(grep -c 'pr-review-run' \"\$FAKE_DIR/tmux-new-window.log\") == 2 && \$(sort \"\$FAKE_DIR/tmux-new-window.log\" | uniq -d | wc -l | tr -d ' ') == 0 ]]"
 chk "launched rows are claimed as running"          "[[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status='running';\") == 2 ]]"
 db "UPDATE pr_reviews SET status='discarded' WHERE status='running'; UPDATE pr_settings SET value='1' WHERE key='max_reviews';"
+echo "== salvage + notes + takeover =="
+mkdir -p "$CTF_PR_REVIEWS_DIR"
+printf '# R\n\n**Verdict:** BLOCK\n' > "$CTF_PR_REVIEWS_DIR/salvage.md"
+db "INSERT INTO pr_reviews (pr_id, head_sha, status, heartbeat_at, started_at, report_path) VALUES ($(pid_of alpha 4), 'ddd4444', 'running', datetime('now','-45 minutes'), datetime('now','-50 minutes'), '$CTF_PR_REVIEWS_DIR/salvage.md');"
+"$WORKER" cycle --sync-only --inline >/dev/null 2>&1
+chk "reap salvages a finished report"   "[[ \$(db \"SELECT status||':'||verdict FROM pr_reviews WHERE report_path LIKE '%salvage.md';\") == staged:BLOCK ]]"
+db "DELETE FROM pr_reviews WHERE report_path LIKE '%salvage.md';"
+"$PRCTL" review alpha#11 --notes "focus on the payment flow" >/dev/null 2>&1 || true
+rid_n="$(db "SELECT id FROM pr_reviews WHERE notes LIKE 'focus on%' ORDER BY id DESC LIMIT 1;")"
+chk "review --notes stored"             "[[ -n \"\$rid_n\" ]]"
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 11)" --review-id "$rid_n" >/dev/null 2>&1
+chk "notes injected into the prompt"    "grep -q 'ADDITIONAL DIRECTIONS' \"\$FAKE_DIR/claude-args.txt\" && grep -q 'focus on the payment flow' \"\$FAKE_DIR/claude-args.txt\""
+rm -f "$FAKE_DIR/tmux-new-window.log"
+CTF_NO_TERMINAL=1 "$PRCTL" takeover alpha#3 --notes "check the cache" >/dev/null 2>&1
+chk "takeover opens a tmux window"      "grep -q 'take-alpha-3' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null && grep -q 'check.*cache' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
+db "UPDATE pr_reviews SET status='discarded' WHERE status IN ('queued','running','staged') AND pr_id IN ($(pid_of alpha 11), $(pid_of alpha 3));"
 rm -f "$FAKE_DIR/bin/tmux"
 chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
 chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"
