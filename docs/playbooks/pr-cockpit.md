@@ -112,6 +112,9 @@ A worker review is headless — it takes no input mid-flight. The three controls
 - **Directions at queue time**: `prctl review <ref> --notes "focus on the payment flow, ignore CSS"` — injected
   into the review prompt as lead directions (the *queue review* buttons ask for them). Requeues keep the notes.
 - **Abort**: `prctl abort <ref>` (or the *abort* button on the running card) kills the run, no requeue.
+- Interactive sessions (take over / work on it) run on `config session_model` — `claude-sonnet-5` by
+  default; `claude-opus-5` / `claude-opus-4-8` allowed; Fable models are rejected. Env override:
+  `CTF_PR_SESSION_MODEL`.
 - **Take over**: `prctl takeover <ref> [--notes "…"]` (or *Take over*) opens an interactive Claude session in a
   tmux window in the repo (a Terminal window attaches automatically) — it starts `/reviewer-ultra` and follows
   your directions live; it never posts unless you say so.

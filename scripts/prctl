@@ -30,7 +30,7 @@ usage: prctl <command> [args]
   watch [--once] [--interval N]                    live dashboard: worker, current review + last action, queue, staged, recent
   log <ref>                                        readable live tail of a running/finished review session
   history [--days N]                               review runs and outcomes (default 2 days)
-  config list | get <key> | set <key> <value>      keys: model (claude-sonnet-5|claude-opus-4-8) max_reviews max_diff stale_author_days stale_days ignore_repos ignore_authors
+  config list | get <key> | set <key> <value>      keys: model (worker: sonnet-5|opus-4.8) session_model (interactive: sonnet-5|opus-5|opus-4.8) max_reviews max_diff stale_* ignore_repos ignore_authors merge_method
 ref = repo#N | Org/repo#N | N (when cwd is inside that repo)
 EOF
 }
@@ -162,6 +162,10 @@ cmd_review() {
   if [[ "$now" == 1 ]]; then exec "$ROOT/scripts/pr-review-run" "$id" --review-id "$rid"; fi
   echo "queued review $rid for $(pr_ref_of_id "$id")${notes:+ with directions} — the worker picks it next"
 }
+session_model() {  # interactive cockpit sessions must never run on Fable
+  local m="${CTF_PR_SESSION_MODEL:-$(setting_get session_model)}"
+  printf '%s' "${m:-claude-sonnet-5}"
+}
 resolve_work_dir() {  # Org/repo → project local_path or $ROOT
   local d
   d="$(sql_ro "SELECT local_path FROM projects WHERE local_path IS NOT NULL AND (github_repo LIKE '%$(sql_esc "$1")' COLLATE NOCASE OR github_repo LIKE '%$(sql_esc "$1").git' COLLATE NOCASE) LIMIT 1;")"
@@ -190,7 +194,7 @@ cmd_takeover() {
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$dir" \
-      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude $(printf '%q' "Interactive review of PR #$num of $repo, directed by the lead. Start with /reviewer-ultra $num $repo and adjust to my directions as we go. Do not post to GitHub unless I explicitly say so.${notes:+ Initial directions: $notes}")"
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "Interactive review of PR #$num of $repo, directed by the lead. Start with /reviewer-ultra $num $repo and adjust to my directions as we go. Do not post to GitHub unless I explicitly say so.${notes:+ Initial directions: $notes}")"
   fi
   if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
     osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
@@ -313,7 +317,7 @@ cmd_work() {
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$cwd" \
-      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude $(printf '%q' "$prompt")"
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "$prompt")"
   fi
   if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
     osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
@@ -389,7 +393,7 @@ cmd_unskip() {
   echo "unskipped $(pr_ref_of_id "$id")"
 }
 cmd_config() {
-  local int_keys=" max_diff stale_author_days stale_days max_reviews " str_keys=" ignore_repos ignore_authors model merge_method "
+  local int_keys=" max_diff stale_author_days stale_days max_reviews " str_keys=" ignore_repos ignore_authors model merge_method session_model "
   case "${1:-list}" in
     list) sql_table "SELECT key, value, updated_at FROM pr_settings ORDER BY key;" ;;
     get)  setting_get "$2"; echo ;;
@@ -399,6 +403,8 @@ cmd_config() {
             [[ "$3" == claude-sonnet-5 || "$3" == claude-opus-4-8 ]] || { echo "model must be claude-sonnet-5 or claude-opus-4-8" >&2; exit 1; }
           elif [[ "$2" == merge_method ]]; then
             [[ "$3" == merge || "$3" == squash || "$3" == rebase ]] || { echo "merge_method must be merge|squash|rebase" >&2; exit 1; }
+          elif [[ "$2" == session_model ]]; then
+            [[ "$3" == claude-sonnet-5 || "$3" == claude-opus-5 || "$3" == claude-opus-4-8 ]] || { echo "session_model must be claude-sonnet-5, claude-opus-5, or claude-opus-4-8 — never a Fable model" >&2; exit 1; }
           elif [[ "$str_keys" != *" $2 "* ]]; then
             echo "unknown key $2 — one of:$int_keys$str_keys" >&2; exit 1
           fi

@@ -339,11 +339,15 @@ chk "notes injected into the prompt"    "grep -q 'ADDITIONAL DIRECTIONS' \"\$FAK
 rm -f "$FAKE_DIR/tmux-new-window.log"
 CTF_NO_TERMINAL=1 "$PRCTL" takeover alpha#3 --notes "check the cache" >/dev/null 2>&1
 chk "takeover opens a tmux window"      "grep -q 'take-alpha-3' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null && grep -q 'check.*cache' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
+chk "takeover pins a non-Fable model"   "LC_ALL=C grep -q -- '--model claude-sonnet-5' \"\$FAKE_DIR/tmux-new-window.log\""
 db "UPDATE pr_reviews SET status='discarded' WHERE status IN ('queued','running','staged') AND pr_id IN ($(pid_of alpha 11), $(pid_of alpha 3));"
 rm -f "$FAKE_DIR/tmux-new-window.log"
 CTF_NO_TERMINAL=1 "$PRCTL" work beta#1 --notes "rename the endpoint" > "$TMP/work.out" 2>&1 
 chk "work opens a tmux session"         "LC_ALL=C grep -q 'work-beta-1' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null && LC_ALL=C grep -q 'rename.*endpoint' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
 chk "work warns when no worktree"       "LC_ALL=C grep -q 'switch.*branches' \"\$FAKE_DIR/tmux-new-window.log\" 2>/dev/null"
+chk "work pins a non-Fable model"       "LC_ALL=C grep -q -- '--model claude-sonnet-5' \"\$FAKE_DIR/tmux-new-window.log\""
+chk "session_model rejects fable"       "! \"\$PRCTL\" config set session_model claude-fable-5 2>/dev/null"
+chk "session_model accepts opus-5"      "\"\$PRCTL\" config set session_model claude-opus-5 >/dev/null && \"\$PRCTL\" config set session_model claude-sonnet-5 >/dev/null"
 rm -f "$FAKE_DIR/bin/tmux"
 chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
 chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"
