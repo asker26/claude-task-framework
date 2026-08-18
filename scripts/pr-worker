@@ -8,7 +8,7 @@ require_db
 
 POLL="${CTF_PR_POLL:-60}"
 SYNC_INTERVAL="${CTF_PR_SYNC_INTERVAL:-300}"
-MAX_REVIEWS="${CTF_PR_MAX_REVIEWS:-$(setting_get max_reviews)}"; MAX_REVIEWS="${MAX_REVIEWS:-1}"
+max_reviews() { local n="${CTF_PR_MAX_REVIEWS:-$(setting_get max_reviews)}"; printf '%s' "${n:-1}"; }   # re-read each cycle: `prctl config set max_reviews N` applies live
 STUCK_MIN="${CTF_PR_STUCK_TIMEOUT:-30}"
 
 cmd="${1:-status}"; [[ $# -gt 0 ]] && shift
@@ -82,16 +82,20 @@ cycle() {
   reap_stuck
   [[ "$sync_only" == 1 ]] && return 0
   if cooldown_active; then echo "cooldown until $(utc_to_local_hm "$(setting_get worker_cooldown_until)") (session cap)"; return 0; fi
-  (( $(sql_ro "SELECT COUNT(*) FROM pr_reviews WHERE status = 'running';") >= MAX_REVIEWS )) && return 0
-  local pick; pick="$(pick_review)"
-  [[ -n "$pick" ]] || return 0
-  launch "${pick%%|*}" "${pick#*|}"
+  local slots pick
+  slots=$(( $(max_reviews) - $(sql_ro "SELECT COUNT(*) FROM pr_reviews WHERE status = 'running';") ))
+  while (( slots > 0 )); do
+    pick="$(pick_review)"
+    [[ -n "$pick" ]] || break
+    launch "${pick%%|*}" "${pick#*|}"
+    slots=$((slots - 1))
+  done
 }
 run_loop() {
   setting_set worker_started_at "$(sql_ro "SELECT CURRENT_TIMESTAMP;")"
   setting_set worker_pid "$$"
   setting_set worker_mode "$(if [[ "$sync_only" == 1 ]]; then echo sync-only; elif [[ "$queue_only" == 1 ]]; then echo queue-only; else echo auto; fi)"
-  echo "pr-worker started (poll ${POLL}s, sync ${SYNC_INTERVAL}s, max ${MAX_REVIEWS} review, stuck ${STUCK_MIN}m, mode $(setting_get worker_mode))"
+  echo "pr-worker started (poll ${POLL}s, sync ${SYNC_INTERVAL}s, max $(max_reviews) concurrent, stuck ${STUCK_MIN}m, mode $(setting_get worker_mode))"
   while true; do cycle; sleep "$POLL"; done
 }
 

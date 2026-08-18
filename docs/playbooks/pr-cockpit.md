@@ -101,7 +101,7 @@ Claims auto-release when the session ends (hook) or goes silent for 48h.
   (oldest PR first). Never drafts, bots, your PRs, `too-big`, or PRs that already have a staged/running review.
 - **Modes**: `start` (auto) also picks from the board by itself; `start --queue-only` runs only what you queued
   (`prctl review <ref>` / the *queue review* button); `start --sync-only` keeps the board fresh and reviews nothing.
-- **One review at a time by default** (`prctl config set max_reviews N`, env `CTF_PR_MAX_REVIEWS` overrides).
+- **Concurrency**: `prctl config set max_reviews N` (applies live, no restart; env `CTF_PR_MAX_REVIEWS` overrides). Set to 3 on 2026-08-18.
   One reviewer-ultra run is already ~7–10 parallel agents; two PRs at once doubles the burn and hits the
   usage cap mid-flight (in-flight agents die). Serial = a cap hit costs one review, then the cooldown resumes.
 - Model from `prctl config model` (only `claude-sonnet-5` / `claude-opus-4-8`; `CTF_PR_CLAUDE_MODEL` overrides).
