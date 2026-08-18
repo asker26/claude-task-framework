@@ -272,19 +272,21 @@ def run_action(payload):
 
 
 CSS = r"""
-:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#d7dae0;--dim:#8b93a3;--acc:#7aa2f7;--ok:#9ece6a;--warn:#e0af68;--bad:#f7768e;--mine:#bb9af7}
+:root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#d7dae0;--dim:#8b93a3;--acc:#7aa2f7;--ok:#9ece6a;--warn:#e0af68;--bad:#f7768e;--mine:#bb9af7;--hover:#1c2029;--sel:#22283a;--code:#0b0e14;--onacc:#0b0e14;--th:#1c2029}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--bg:#f6f7f9;--panel:#ffffff;--line:#e1e4ea;--fg:#1f2430;--dim:#66707f;--acc:#2f6feb;--ok:#2e9e5b;--warn:#b7791f;--bad:#d64545;--mine:#7c5cff;--hover:#f0f2f6;--sel:#e8eefc;--code:#eef1f5;--onacc:#ffffff;--th:#f0f2f6}}
+:root[data-theme="light"]{--bg:#f6f7f9;--panel:#ffffff;--line:#e1e4ea;--fg:#1f2430;--dim:#66707f;--acc:#2f6feb;--ok:#2e9e5b;--warn:#b7791f;--bad:#d64545;--mine:#7c5cff;--hover:#f0f2f6;--sel:#e8eefc;--code:#eef1f5;--onacc:#ffffff;--th:#f0f2f6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
 header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
 header h1{font-size:15px;margin:0;font-weight:600}header .dim{color:var(--dim)}header .grow{flex:1}
 button{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer;font:inherit}
-button:hover{border-color:var(--acc)}button.primary{background:var(--acc);color:#0b0e14;border-color:var(--acc)}button.danger{border-color:var(--bad);color:var(--bad)}
+button:hover{border-color:var(--acc)}button.primary{background:var(--acc);color:var(--onacc);border-color:var(--acc)}button.danger{border-color:var(--bad);color:var(--bad)}
 main{display:block;min-height:calc(100vh - 46px)}main.split{display:grid;grid-template-columns:minmax(560px,1.1fr) minmax(520px,1fr)}
 section{padding:12px 16px;overflow:auto}main.split section:first-child{border-right:1px solid var(--line)}#report{display:none}main.split #report{display:block;position:sticky;top:46px;max-height:calc(100vh - 46px)}
 h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:14px 0 6px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px}
 .run .act{color:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 table.board{width:100%;border-collapse:collapse}table.board td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
-table.board td.title{color:var(--dim);max-width:0;width:100%;overflow:hidden;text-overflow:ellipsis}main.split table.board td.title{display:none}table.board tr:hover td{background:#1c2029}table.board tr.sel td{background:#22283a}
+table.board td.title{color:var(--dim);max-width:0;width:100%;overflow:hidden;text-overflow:ellipsis}main.split table.board td.title{display:none}table.board tr:hover td{background:var(--hover)}table.board tr.sel td{background:var(--sel)}
 .ref{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--acc);cursor:pointer}a.gh{color:var(--dim);text-decoration:none;font-size:12px}a.gh:hover{color:var(--acc)}
 .tag{display:inline-block;padding:0 6px;border-radius:10px;font-size:11px;border:1px solid var(--line);color:var(--dim);margin-right:3px}
 .tag.stale{color:var(--warn);border-color:var(--warn)}.tag.red{color:var(--bad);border-color:var(--bad)}.tag.ok{color:var(--ok);border-color:var(--ok)}
@@ -292,8 +294,11 @@ table.board td.title{color:var(--dim);max-width:0;width:100%;overflow:hidden;tex
 .status{font-weight:600}.st-staged{color:var(--acc)}.st-running{color:var(--warn)}.st-re-review,.st-author-replied{color:var(--warn)}.st-approved{color:var(--ok)}.st-review-failed{color:var(--bad)}
 #report .body{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;line-height:1.5}
 #report .body h1,#report .body h2,#report .body h3{margin:14px 0 6px;font-size:14px;color:var(--fg);letter-spacing:0;text-transform:none}
-#report .body table{border-collapse:collapse;margin:8px 0;font-size:13px}#report .body th,#report .body td{border:1px solid var(--line);padding:3px 8px;text-align:left;vertical-align:top}
-#report .body code{background:#0b0e14;padding:1px 4px;border-radius:4px;font-size:12px}#report .body pre{background:#0b0e14;padding:8px;border-radius:6px;overflow:auto;font-size:12px}
+#report .body{overflow-x:auto;overflow-wrap:break-word}#report .body table{width:100%;max-width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
+#report .body th,#report .body td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top;overflow-wrap:break-word}#report .body th{background:var(--th);white-space:nowrap}
+#report .body td:first-child,#report .body th:first-child{white-space:nowrap}
+#report .body code{background:var(--code);padding:1px 4px;border-radius:4px;font-size:12px;overflow-wrap:anywhere}#report .body pre{background:var(--code);padding:8px;border-radius:6px;overflow:auto;font-size:12px}
+#report .body p,#report .body li{max-width:100ch}
 .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}select{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px}
 .toast{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;max-width:520px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:12px;display:none;z-index:5}
 .hist{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim)}.hist b{color:var(--fg)}
@@ -302,8 +307,9 @@ table.board td.title{color:var(--dim);max-width:0;width:100%;overflow:hidden;tex
 
 PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>PR cockpit</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>__CSS__</style></head><body>
+<style>__CSS__</style><script>(function(){var t=localStorage.getItem('prc-theme');if(t)document.documentElement.setAttribute('data-theme',t)})();function toggleTheme(){var cur=document.documentElement.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');var n=cur==='dark'?'light':'dark';localStorage.setItem('prc-theme',n);document.documentElement.setAttribute('data-theme',n)}</script></head><body>
 <header><h1>PR cockpit · <span id="org"></span></h1><span class="dim" id="hdr">…</span><span class="grow"></span>
+<button onclick="toggleTheme()" title="light / dark">☀/☾</button>
 <button onclick="act({action:'sync'})">Sync</button>
 <button id="wbtn" onclick="workerToggle()">Worker</button>
 <button onclick="act({action:'worker',mode:'start-queue'})" title="run only what was queued">Start queue-only</button>
@@ -364,8 +370,8 @@ load();setInterval(load,10000);
 
 REPORT_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>__TITLE__</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>__CSS__ .wrap{max-width:1100px;margin:0 auto;padding:16px}#report{display:block}#report .body{font-size:14px}</style></head><body>
-<header><h1><a href="/" style="color:var(--fg);text-decoration:none">PR cockpit</a> · <span class="dim">report</span></h1><span class="grow"></span><span class="dim small" id="clock"></span></header>
+<style>__CSS__ .wrap{max-width:1500px;margin:0 auto;padding:16px}#report{display:block}#report .body{font-size:14px}#report .body p,#report .body li{max-width:none}</style><script>(function(){var t=localStorage.getItem('prc-theme');if(t)document.documentElement.setAttribute('data-theme',t)})();function toggleTheme(){var cur=document.documentElement.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');var n=cur==='dark'?'light':'dark';localStorage.setItem('prc-theme',n);document.documentElement.setAttribute('data-theme',n)}</script></head><body>
+<header><h1><a href="/" style="color:var(--fg);text-decoration:none">PR cockpit</a> · <span class="dim">report</span></h1><span class="grow"></span><button onclick="toggleTheme()" title="light / dark">☀/☾</button></header>
 <div class="wrap" id="report">__CARD__<div class="body">__HTML__</div></div>
 <div class="toast" id="toast"></div>
 <script>

@@ -38,8 +38,10 @@ prctl serve                 # same, in the foreground
 One page: header (sync age, worker state, model, Start/Stop worker, Sync), the running review with its last
 action + agents count, staged reports, queue, the board with **queue review / skip** buttons, live sessions,
 last-48h outcomes. Click any ref → the rendered report on the right with **Post to GitHub** (verdict override,
-full/stripped), **Discard**, **Re-review**, **Session log**. Every button runs the same `prctl` command the
-CLI would; posting still asks for confirmation. Bound to 127.0.0.1, no auth — do not expose it.
+full/stripped), **Discard**, **Re-review**, **Session log**, **Full page ↗** (`/report?ref=repo%23N` — the report
+alone, tab-friendly). Every button runs the same `prctl` command the CLI would; posting still asks for
+confirmation. Light/dark follows the OS; ☀/☾ in the header overrides (remembered). Bound to 127.0.0.1, no auth
+— do not expose it.
 
 ## Live status
 
