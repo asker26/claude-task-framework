@@ -190,6 +190,7 @@ scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # tmux ctf-agents:pr-worker, one review at a time
 scripts/prctl watch [--once] | log <ref> | history [--days N]           # live dashboard · readable review stream · run outcomes
+scripts/prctl serve [--bg] [--port N] | serve stop                        # local web UI (127.0.0.1:7787): board, live status, rendered reports, post/discard/skip buttons
 scripts/prctl config set model claude-sonnet-5                  # or claude-opus-4-8 (worker model; subagents inherit); also max_diff, stale_*, ignore_repos, ignore_authors
 ```
 
@@ -246,6 +247,7 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 | `migrate-v5-prs.sh` | Idempotent migration: PR cockpit tables + `pr_board` view (always recreated) |
 | `install-pr-hooks.sh` | Appends the three PR session hooks to `~/.claude/settings.json` (idempotent, backup) |
 | `test-prctl` | Offline integration test for the whole PR cockpit (fake `gh` + `claude` shims) |
+| `pr-serve` | Local web UI for the PR cockpit (Python stdlib, 127.0.0.1 only); reads `tasks.db`, mutates only via `prctl` |
 
 ## Conventions
 

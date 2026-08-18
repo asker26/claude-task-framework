@@ -258,6 +258,7 @@ scripts/prctl skip <ref> [--days N] | unskip <ref>
 scripts/prctl claim <ref> | release | whoami | label "payments" | sessions
 scripts/prctl worker start [--sync-only|--queue-only] | stop | status   # queue-only = run only what you queued
 scripts/prctl watch | log <ref> | history                                # live dashboard, readable review stream, outcomes
+scripts/prctl serve --bg                                                  # local web UI at http://127.0.0.1:7787 (board, live status, reports, buttons)
 scripts/prctl config set model claude-sonnet-5                    # or claude-opus-4-8; also max_diff, stale_author_days, stale_days, ignore_repos, ignore_authors
 ```
 

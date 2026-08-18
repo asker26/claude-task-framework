@@ -17,6 +17,7 @@ usage: prctl <command> [args]
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
   worker start [--sync-only|--queue-only] | stop | status
+  serve [--port N] [--bg] | serve stop             local web UI (board, live status, rendered reports, post/discard/skip buttons)
   watch [--once] [--interval N]                    live dashboard: worker, current review + last action, queue, staged, recent
   log <ref>                                        readable live tail of a running/finished review session
   history [--days N]                               review runs and outcomes (default 2 days)
@@ -419,6 +420,26 @@ cmd_history() {
              ORDER BY r.id DESC;"
 }
 
+# ---------------------------------------------------------------- serve
+cmd_serve() {
+  local port="${CTF_PR_UI_PORT:-7787}" bg=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      stop) tmux kill-window -t "$TMUX_SESSION:pr-serve" 2>/dev/null && echo "UI stopped" || echo "UI not running in tmux"; return 0 ;;
+      --port) port="$2"; shift 2 ;; --bg) bg=1; shift ;;
+      *) echo "unknown option $1" >&2; exit 1 ;;
+    esac
+  done
+  if [[ "$bg" == 1 ]]; then
+    tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+    if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx pr-serve; then echo "UI already running: http://127.0.0.1:$port"; return 0; fi
+    tmux new-window -d -t "$TMUX_SESSION" -n pr-serve "$ROOT/scripts/pr-serve --port $port"
+    echo "UI running in tmux $TMUX_SESSION:pr-serve → http://127.0.0.1:$port   (prctl serve stop)"
+    return 0
+  fi
+  exec "$ROOT/scripts/pr-serve" --port "$port"
+}
+
 # ---------------------------------------------------------------- dispatch
 case "$cmd" in
   board)   cmd_board "$@" ;;
@@ -439,6 +460,7 @@ case "$cmd" in
   whoami)  cmd_whoami "$@" ;;
   label)   cmd_label "$@" ;;
   worker)  exec "$ROOT/scripts/pr-worker" "$@" ;;
+  serve)   cmd_serve "$@" ;;
   watch)   cmd_watch "$@" ;;
   log)     cmd_log "${1:?ref required}" ;;
   history) cmd_history "$@" ;;

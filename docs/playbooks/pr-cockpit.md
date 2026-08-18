@@ -28,6 +28,19 @@ re-installs idempotently). They register every Claude session; nothing else to d
 | raw review-session logs | `.reviews/logs/<same>.log` (stream-json) |
 | worker | tmux `ctf-agents:pr-worker`; each review runs in `ctf-agents:review-<repo>-<n>` |
 
+## Web UI (optional, local only)
+
+```bash
+prctl serve --bg            # http://127.0.0.1:7787 in tmux ctf-agents:pr-serve   (prctl serve stop; --port N; CTF_PR_UI_PORT)
+prctl serve                 # same, in the foreground
+```
+
+One page: header (sync age, worker state, model, Start/Stop worker, Sync), the running review with its last
+action + agents count, staged reports, queue, the board with **queue review / skip** buttons, live sessions,
+last-48h outcomes. Click any ref → the rendered report on the right with **Post to GitHub** (verdict override,
+full/stripped), **Discard**, **Re-review**, **Session log**. Every button runs the same `prctl` command the
+CLI would; posting still asks for confirmation. Bound to 127.0.0.1, no auth — do not expose it.
+
 ## Live status
 
 ```bash

@@ -407,6 +407,31 @@ HOME="$FAKE_HOME" "$ROOT/scripts/install-pr-hooks.sh" >/dev/null
 chk "installer idempotent"         "[[ \$(jq '[.hooks[][].hooks[].command | select(test(\"pr-session-\"))] | length' \"\$FAKE_HOME/.claude/settings.json\") == 3 ]]"
 chk "installer made a backup"      "ls \"\$FAKE_HOME/.claude/\"settings.json.bak-* >/dev/null 2>&1"
 
+# ===================================================================== 9. pr-serve (web UI)
+echo "== pr-serve =="
+reset_db; "$ROOT/scripts/pr-sync" >/dev/null
+for n in 1 2; do view_fixture $n; done
+FAKE_CLAUDE_MODE=report "$RUN" "$(pid_of alpha 1)" >/dev/null 2>&1
+"$ROOT/scripts/pr-serve" --port 0 > "$TMP/serve.log" 2>&1 &
+SERVE_PID=$!
+for i in $(seq 1 50); do grep -q "listening on" "$TMP/serve.log" 2>/dev/null && break; sleep 0.2; done
+PORT="$(grep -o 'http://127.0.0.1:[0-9]*' "$TMP/serve.log" | head -1 | sed 's/.*://')"
+BASE="http://127.0.0.1:$PORT"
+chk "serve starts and prints its port"   "[[ -n \"\$PORT\" ]]"
+chk "GET / is the page"                  "curl -s \"\$BASE/\" | has 'PR cockpit'"
+chk "GET /api/state has board + staged"  "curl -s \"\$BASE/api/state\" | jq -e '(.board|length) == 13 and (.staged|length) == 1 and (.staged[0].ref == \"alpha#1\") and (.worker != null)' >/dev/null"
+chk "GET /api/report renders markdown"   "curl -s \"\$BASE/api/report?ref=alpha%231\" | jq -e '.html | test(\"<h1>Review</h1>\") and test(\"<strong>Verdict:</strong>\")' >/dev/null"
+chk "GET /api/report unknown → error"    "curl -s \"\$BASE/api/report?ref=alpha%235\" | jq -e '.error == \"no report\"' >/dev/null"
+chk "GET /api/log unknown → text"        "curl -s \"\$BASE/api/log?ref=alpha%235\" | has 'no session log'"
+chk "POST review queues via prctl"       "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"review\",\"ref\":\"alpha#2\"}' | jq -e '.ok' >/dev/null && [[ \$(st alpha 2) == running ]]"
+chk "POST discard dequeues"              "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"discard\",\"ref\":\"alpha#2\"}' | jq -e '.ok' >/dev/null && [[ \$(st alpha 2) == re-review ]]"
+chk "POST skip / unskip"                 "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"skip\",\"ref\":\"alpha#2\",\"days\":3}' | jq -e '.ok' >/dev/null && [[ \$(st alpha 2) == skipped ]] && curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"unskip\",\"ref\":\"alpha#2\"}' | jq -e '.ok' >/dev/null"
+chk "POST unknown action → 400"          "[[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST \"\$BASE/api/action\" -d '{\"action\":\"rm\",\"ref\":\"alpha#1\"}') == 400 ]]"
+chk "POST bad ref → 400"                 "[[ \$(curl -s -o /dev/null -w '%{http_code}' -X POST \"\$BASE/api/action\" -d '{\"action\":\"skip\",\"ref\":\"; rm -rf /\"}') == 400 ]]"
+rm -f "$FAKE_DIR/gh/calls.log"
+chk "POST post → gh pr review via prctl" "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"post\",\"ref\":\"alpha#1\",\"verdict\":\"C\"}' | jq -e '.ok' >/dev/null && grep -q -- '--comment' \"\$FAKE_DIR/gh/calls.log\" && [[ \$(db \"SELECT status FROM pr_reviews WHERE pr_id=$(pid_of alpha 1) ORDER BY id DESC LIMIT 1;\") == posted ]]"
+kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null
+
 # --- summary ---
 echo ""
 if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi
