@@ -252,6 +252,8 @@ cmd_optimize() {
 KEEP: the **Verdict:** line verbatim, the summary, and every concrete finding with its file:line and the required fix.
 REMOVE ENTIRELY: sections or paragraphs reporting that nothing was found; validator/process narration (rounds, who confirmed what); 'False Positives Removed', 'Dropped as defensive', and 'Missed in Round 1' sections unless they contain a surviving actionable finding; restatements and praise; process asks that are not code defects (requests to explain intent, empty-PR-body complaints, TDD/missing-test compliance notes) — drop such findings even if numbered, and recompute the summary from what remains.
 Tighten the wording of what remains. Keep markdown; keep tables only where they carry findings, and compress verbose cells.
+ADD a final column named 'In plain words' to every findings table: 1-2 sentences per finding written for a smart product manager with zero engineering background — what actually goes wrong for the user or the business, and why it matters. Rules for that column: zero unexplained jargon (translate inline on first use); no code, file paths, or acronyms; consequences not mechanisms ('checkout could charge twice', never 'race condition'); quantify in PM units (users affected, revenue, days) not ms/MB/lines; an everyday analogy is welcome when it carries the mechanism; not condescending.
+After the Summary line, add one final line 'In plain words:' restating the overall verdict the same way (2-3 sentences max).
 Output ONLY the rewritten markdown — no preamble, no commentary.
 
 $content" > "$opt.tmp" || { rm -f "$opt.tmp"; echo "optimize failed (claude exited non-zero)" >&2; exit 1; }

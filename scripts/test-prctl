@@ -536,6 +536,7 @@ rm -f "$FAKE_DIR/bin/acli"
 chk "UI merge action"                "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"merge\",\"ref\":\"alpha#5\"}' | jq -e '.ok' >/dev/null && [[ \$(db \"SELECT state FROM prs WHERE repo='FS-Code/alpha' AND number=5;\") == merged ]]"
 
 chk "optimize creates -opt.md"           "\"\$PRCTL\" optimize alpha#1 >/dev/null 2>&1 && test -s \"\$(db \"SELECT replace(report_path,'.md','-opt.md') FROM pr_reviews WHERE pr_id=$(pid_of alpha 1) ORDER BY id DESC LIMIT 1;\")\""
+chk "optimize prompt asks for plain-words column" "LC_ALL=C grep -q 'In plain words' \"\$FAKE_DIR/claude-args.txt\" && LC_ALL=C grep -qi 'product manager' \"\$FAKE_DIR/claude-args.txt\""
 chk "api/report defaults to optimized"   "curl -s \"\$BASE/api/report?ref=alpha%231\" | jq -e '.has_optimized and .view == \"optimized\" and (.html | test(\"one real finding\"))' >/dev/null"
 chk "api/report?view=original"           "curl -s \"\$BASE/api/report?ref=alpha%231&view=original\" | jq -e '.view == \"original\" and (.html | test(\"False Positives\"))' >/dev/null"
 rm -f "$FAKE_DIR/gh/calls.log"

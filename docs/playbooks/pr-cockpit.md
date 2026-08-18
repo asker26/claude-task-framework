@@ -102,6 +102,8 @@ that breaks; "state intent" / empty-PR-body / TDD-compliance asks are banned fro
 
 `prctl optimize <ref>` (or the **Optimize** button) rewrites the report into a compact author-facing version —
 verdict + concrete findings only, all "none found"/process narration dropped — saved as `<report>-opt.md`.
+Each finding also gets an **"In plain words"** column (the `/efnpm` treatment: consequences not mechanisms,
+no jargon, PM units) and the summary gets a plain-words restatement — so the report reads at a glance.
 The UI then defaults to the optimized view (toggle to original any time) and pre-checks **post optimized**;
 CLI: `prctl post <ref> --optimized`. Runs one small headless call on the configured worker model (~1 min).
 
