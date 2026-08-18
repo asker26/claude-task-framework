@@ -271,9 +271,7 @@ def run_action(payload):
     return (200 if p.returncode == 0 else 500), {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()[-4000:]}
 
 
-PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>PR cockpit</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
+CSS = r"""
 :root{--bg:#0f1115;--panel:#171a21;--line:#262b36;--fg:#d7dae0;--dim:#8b93a3;--acc:#7aa2f7;--ok:#9ece6a;--warn:#e0af68;--bad:#f7768e;--mine:#bb9af7}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
 header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
@@ -300,7 +298,11 @@ table.board td.title{color:var(--dim);max-width:0;width:100%;overflow:hidden;tex
 .toast{position:fixed;bottom:16px;right:16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px;max-width:520px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:12px;display:none;z-index:5}
 .hist{font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim)}.hist b{color:var(--fg)}
 .small{font-size:12px;color:var(--dim)}
-</style></head><body>
+"""
+
+PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>PR cockpit</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>__CSS__</style></head><body>
 <header><h1>PR cockpit · <span id="org"></span></h1><span class="dim" id="hdr">…</span><span class="grow"></span>
 <button onclick="act({action:'sync'})">Sync</button>
 <button id="wbtn" onclick="workerToggle()">Worker</button>
@@ -333,7 +335,7 @@ function render(){if(!S)return;document.getElementById('org').textContent=S.org;
  document.getElementById('hdr').textContent=`synced ${S.synced_min==null?'?':S.synced_min}m ago · worker: ${S.worker} · model ${S.model}`;
  document.getElementById('wbtn').textContent=S.worker_running?'Stop worker':'Start worker (auto)';
  document.getElementById('running').innerHTML=S.running.length?S.running.map(r=>`<div class="card run"><b>RUNNING</b> <span class="ref" onclick="openLog('${r.ref}')">${esc(r.ref)}</span> · ${r.mins}m · agents ${r.agents} · heartbeat ${r.hb_s}s ago<div class="act">${esc(r.last_action||'')}</div></div>`).join(''):'<div class="card small">worker idle — nothing running</div>';
- document.getElementById('staged').innerHTML=S.staged.length?`<table class="board">`+S.staged.map(s=>`<tr class="${sel===s.ref?'sel':''}" onclick="openReport('${s.ref}')"><td><span class="ref">${esc(s.ref)}</span> ${gh(s)}</td><td class="status st-staged">${esc(s.verdict||'?')}${s.behind?' (behind)':''}</td><td>${s.mins_ago}m ago</td><td>${esc(s.author||'')}</td><td class="title">${esc(s.title||'')}</td><td><button class="primary" onclick="event.stopPropagation();openReport('${s.ref}')">read</button></td></tr>`).join('')+'</table>':'<div class="small">nothing staged</div>';
+ document.getElementById('staged').innerHTML=S.staged.length?`<table class="board">`+S.staged.map(s=>`<tr class="${sel===s.ref?'sel':''}" onclick="openReport('${s.ref}')"><td><span class="ref">${esc(s.ref)}</span> ${gh(s)}</td><td class="status st-staged">${esc(s.verdict||'?')}${s.behind?' (behind)':''}</td><td>${s.mins_ago}m ago</td><td>${esc(s.author||'')}</td><td class="title">${esc(s.title||'')}</td><td><button class="primary" onclick="event.stopPropagation();openReport('${s.ref}')">read</button> <a href="/report?ref=${encodeURIComponent(s.ref)}" target="_blank" onclick="event.stopPropagation()"><button>full page ↗</button></a></td></tr>`).join('')+'</table>':'<div class="small">nothing staged</div>';
  document.getElementById('queue').innerHTML=S.queue.length?S.queue.map(q=>`<div><span class="ref" onclick="openReport('${q.ref}')">${esc(q.ref)}</span> queued ${q.mins}m ago${q.attempts?' · attempt '+(q.attempts+1):''} <button onclick="act({action:'discard',ref:'${q.ref}',reason:'dequeued from UI'})">dequeue</button></div>`).join(''):'(empty)';
  const by=st=>S.board.filter(b=>st.includes(b.status));
  document.getElementById('board').innerHTML=section('Needs you',by(['running','staged','review-failed','re-review','author-replied','needs-review']))+section('Waiting on author',by(['waiting-author','commented']))+section('Approved',by(['approved']))+section('Mine',by(['mine']))+section('Skipped',by(['skipped']))+section('Drafts',by(['draft']));
@@ -352,12 +354,55 @@ async function openReport(ref){sel=ref;render();document.querySelector('main').c
  <button class="primary" onclick="postIt('${r.ref}')">Post to GitHub</button>
  <button class="danger" onclick="if(confirm('Discard this report?'))act({action:'discard',ref:'${r.ref}'})">Discard</button>`:''}
  <button onclick="act({action:'review',ref:'${r.ref}'})">Re-review</button>
- <button onclick="openLog('${r.ref}')">Session log</button> <button onclick="closeReport()">Close</button></div></div>
+ <button onclick="openLog('${r.ref}')">Session log</button> <a href="/report?ref=${encodeURIComponent(r.ref)}" target="_blank"><button>Full page ↗</button></a> <button onclick="closeReport()">Close</button></div></div>
  <div class="body">${r.html}</div>`}
 function postIt(ref){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked;if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref,verdict:v||undefined,full})}
 async function openLog(ref){sel=ref;document.querySelector('main').classList.add('split');const t=await (await fetch('/api/log?ref='+encodeURIComponent(ref))).text();document.getElementById('report').innerHTML=`<div class="card"><b>${esc(ref)}</b> · session log (last 200 events) <button onclick="openLog('${ref}')">refresh</button> <button onclick="openReport('${ref}')">report</button> <button onclick="closeReport()">close</button></div><pre class="body" style="white-space:pre-wrap;font-size:12px">${esc(t)}</pre>`}
 load();setInterval(load,10000);
 </script></body></html>"""
+
+
+REPORT_PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><title>__TITLE__</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>__CSS__ .wrap{max-width:1100px;margin:0 auto;padding:16px}#report{display:block}#report .body{font-size:14px}</style></head><body>
+<header><h1><a href="/" style="color:var(--fg);text-decoration:none">PR cockpit</a> · <span class="dim">report</span></h1><span class="grow"></span><span class="dim small" id="clock"></span></header>
+<div class="wrap" id="report">__CARD__<div class="body">__HTML__</div></div>
+<div class="toast" id="toast"></div>
+<script>
+const REF=__REF__;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',8000)}
+async function act(p){toast('… '+p.action+' '+(p.ref||''));const r=await fetch('/api/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});const j=await r.json();toast((j.ok?'✓ ':'✗ ')+j.output);if(j.ok)setTimeout(()=>location.reload(),1200)}
+function postIt(){const v=document.getElementById('vsel').value,full=document.getElementById('vfull').checked;if(!confirm('Post this review to GitHub under your account?'))return;act({action:'post',ref:REF,verdict:v||undefined,full})}
+</script></body></html>"""
+
+
+def report_page(ref):
+    r = report(ref)
+    if r.get("error") and not r.get("markdown"):
+        card = (f'<div class="card"><b>{html.escape(ref)}</b>'
+                + (f' · <a href="{html.escape(r["url"])}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "open on GitHub")} ↗</a>' if r.get("url") else "")
+                + f'<br><span class="small">{html.escape(r["error"])}</span>'
+                + f'<div class="actions"><button class="primary" onclick="act({{action:\'review\',ref:REF}})">queue review</button> <a href="/"><button>back to cockpit</button></a></div></div>')
+        body = ""
+    else:
+        v = r.get("verdict") or ""
+        can_post = r.get("status") == "staged"
+        behind = f' <span class="tag stale">behind head {html.escape((r.get("pr_head") or "")[:7])}</span>' if r.get("behind") else ""
+        actions = ""
+        if can_post:
+            actions += (f'<label class="small">post as <select id="vsel"><option value="">{html.escape(v or "unparsed → comment")}</option>'
+                        '<option value="A">approve</option><option value="RC">request changes</option><option value="C">comment</option></select></label> '
+                        '<label class="small"><input type="checkbox" id="vfull"> full report</label> '
+                        '<button class="primary" onclick="postIt()">Post to GitHub</button> '
+                        '<button class="danger" onclick="if(confirm(\'Discard this report?\'))act({action:\'discard\',ref:REF})">Discard</button> ')
+        actions += '<button onclick="act({action:\'review\',ref:REF})">Re-review</button> <a href="/"><button>back to cockpit</button></a>'
+        card = (f'<div class="card"><b>{html.escape(r["ref"])}</b> · <a href="{html.escape(r.get("url") or "#")}" target="_blank" style="color:var(--acc)">{html.escape(r.get("title") or "")} ↗</a> · {html.escape(r.get("author") or "")}<br>'
+                f'<span class="small">review {r["id"]} · {html.escape(r["status"])} · verdict <b>{html.escape(v or "unparsed")}</b> · reviewed {html.escape((r.get("head_sha") or "")[:7])}{behind} · {html.escape(r.get("finished_at") or "")}</span>'
+                f'<div class="actions">{actions}</div></div>')
+        body = r["html"]
+    return (REPORT_PAGE.replace("__CSS__", CSS).replace("__TITLE__", html.escape(f"{ref} · report"))
+            .replace("__CARD__", card).replace("__HTML__", body).replace("__REF__", json.dumps(ref)))
 
 
 def log_text(ref):
@@ -409,7 +454,9 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         try:
             if u.path == "/":
-                self._send(200, PAGE, "text/html; charset=utf-8")
+                self._send(200, PAGE.replace("__CSS__", CSS), "text/html; charset=utf-8")
+            elif u.path == "/report":
+                self._send(200, report_page(q.get("ref", [""])[0]), "text/html; charset=utf-8")
             elif u.path == "/api/state":
                 self._send(200, state())
             elif u.path == "/api/report":

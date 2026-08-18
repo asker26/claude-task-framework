@@ -301,6 +301,25 @@ db "INSERT INTO pr_reviews (pr_id, head_sha, status, heartbeat_at, started_at, a
 chk "stuck review reaped → failed:stuck"    "[[ \$(db \"SELECT status||':'||error||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) AND status='failed';\") == failed:stuck:1 ]]"
 chk "stuck review requeued once"            "[[ \$(db \"SELECT status||':'||attempts FROM pr_reviews WHERE pr_id=$(pid_of alpha 12) ORDER BY id DESC LIMIT 1;\") == queued:1 ]]"
 chk "worker status runs"                    "\"\$WORKER\" status | has 'worker: stopped'"
+cat > "$FAKE_DIR/bin/tmux" <<'TMUXEOF'
+#!/usr/bin/env bash
+# fake tmux: pretends the session exists; logs new-window calls; nothing runs
+case "$1" in
+  has-session) exit 0 ;;
+  list-windows) echo shell ;;
+  new-window) echo "$*" >> "$FAKE_DIR/tmux-new-window.log"; exit 0 ;;
+  *) exit 0 ;;
+esac
+TMUXEOF
+chmod +x "$FAKE_DIR/bin/tmux"
+db "UPDATE pr_settings SET value='3' WHERE key='max_reviews';"
+db "UPDATE pr_reviews SET status='discarded' WHERE status IN ('queued','running');"
+"$PRCTL" review alpha#10 >/dev/null; "$PRCTL" review alpha#11 >/dev/null
+rm -f "$FAKE_DIR/tmux-new-window.log"; "$WORKER" cycle --queue-only >/dev/null 2>&1
+chk "multi-slot cycle launches each queued review once" "[[ \$(grep -c 'pr-review-run' \"\$FAKE_DIR/tmux-new-window.log\") == 2 && \$(sort \"\$FAKE_DIR/tmux-new-window.log\" | uniq -d | wc -l | tr -d ' ') == 0 ]]"
+chk "launched rows are claimed as running"          "[[ \$(db \"SELECT COUNT(*) FROM pr_reviews WHERE status='running';\") == 2 ]]"
+db "UPDATE pr_reviews SET status='discarded' WHERE status='running'; UPDATE pr_settings SET value='1' WHERE key='max_reviews';"
+rm -f "$FAKE_DIR/bin/tmux"
 chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
 chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"
 chk "prctl log prints readable stream"       "\"\$PRCTL\" log alpha#2 2>/dev/null | head -3 | has 'init'"
@@ -422,6 +441,8 @@ chk "GET / is the page"                  "curl -s \"\$BASE/\" | has 'PR cockpit'
 chk "GET /api/state has board + staged"  "curl -s \"\$BASE/api/state\" | jq -e '(.board|length) == 13 and (.staged|length) == 1 and (.staged[0].ref == \"alpha#1\") and (.worker != null)' >/dev/null"
 chk "GET /api/report renders markdown"   "curl -s \"\$BASE/api/report?ref=alpha%231\" | jq -e '.html | test(\"<h1>Review</h1>\") and test(\"<strong>Verdict:</strong>\")' >/dev/null"
 chk "GET /api/report unknown → error"    "curl -s \"\$BASE/api/report?ref=alpha%235\" | jq -e '.error == \"no report\"' >/dev/null"
+chk "GET /report full page renders"      "curl -s \"\$BASE/report?ref=alpha%231\" | has 'Post to GitHub' && curl -s \"\$BASE/report?ref=alpha%231\" | has '<h1>Review</h1>'"
+chk "GET /report no-report page"         "curl -s \"\$BASE/report?ref=alpha%235\" | has 'queue review'"
 chk "GET /api/log unknown → text"        "curl -s \"\$BASE/api/log?ref=alpha%235\" | has 'no session log'"
 chk "POST review queues via prctl"       "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"review\",\"ref\":\"alpha#2\"}' | jq -e '.ok' >/dev/null && [[ \$(st alpha 2) == running ]]"
 chk "POST discard dequeues"              "curl -s -X POST \"\$BASE/api/action\" -d '{\"action\":\"discard\",\"ref\":\"alpha#2\"}' | jq -e '.ok' >/dev/null && [[ \$(st alpha 2) == re-review ]]"

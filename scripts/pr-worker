@@ -73,7 +73,8 @@ launch() {  # review_id pr_id
   local win; win="review-$(sql_ro "SELECT substr(repo, instr(repo, '/') + 1) || '-' || number FROM prs WHERE id = $2;")"
   if [[ "$inline" == 1 ]]; then "$ROOT/scripts/pr-review-run" "$2" --review-id "$1" || true; return 0; fi
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
-  sql "UPDATE pr_reviews SET tmux_window = $(sql_str "$win") WHERE id = $1;"
+  # claim the row before the runner comes up, or the next pick in this cycle launches it again
+  sql "UPDATE pr_reviews SET status = 'running', tmux_window = $(sql_str "$win"), started_at = CURRENT_TIMESTAMP, heartbeat_at = CURRENT_TIMESTAMP WHERE id = $1;"
   tmux new-window -d -t "$TMUX_SESSION" -n "$win" "$ROOT/scripts/pr-review-run $2 --review-id $1; sleep 5"
   echo "launched review $1 in tmux $TMUX_SESSION:$win"
 }
