@@ -36,7 +36,7 @@ export function Cockpit() {
 
   const by = (statuses: string[]) => (s?.board ?? []).filter(b => statuses.includes(b.status))
   const open = (ref: string) => setSel(ref)
-  const needsYou = by(['staged', 'review-failed', 're-review', 'author-replied', 'needs-review'])
+  const needsYou = by(['review-failed', 're-review', 'author-replied', 'needs-review'])
 
   return (
     <div className="min-h-screen">
@@ -77,7 +77,7 @@ export function Cockpit() {
           {s && <QueueList queue={s.queue} refresh={refresh} />}
           {s && (
             <>
-              <BoardSection title="Needs you" rows={by(['staged', 'review-failed', 're-review', 'author-replied', 'needs-review'])} sel={sel} open={open} refresh={refresh} />
+              <BoardSection title="Needs you" rows={by(['review-failed', 're-review', 'author-replied', 'needs-review'])} sel={sel} open={open} refresh={refresh} />
               <BoardSection title="Waiting on author" rows={by(['waiting-author', 'commented'])} sel={sel} open={open} refresh={refresh} />
               <BoardSection title="Approved" rows={by(['approved'])} sel={sel} open={open} refresh={refresh} />
               <BoardSection title="Mine" rows={by(['mine'])} sel={sel} open={open} refresh={refresh} />

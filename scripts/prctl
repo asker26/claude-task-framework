@@ -114,7 +114,7 @@ cmd_board() {
   last="$(setting_get last_sync_at)"; age="?"
   [[ -n "$last" ]] && age="$(sql_ro "SELECT CAST((julianday('now') - julianday('$last')) * 1440 AS INTEGER);")"
   echo "$PR_ORG PRs · synced ${age}m ago · worker: $(worker_state_text)"
-  section "NEEDS YOU"         "status IN ('staged','review-failed','re-review','author-replied','needs-review')" "$where"
+  section "NEEDS YOU"         "status IN ('review-failed','re-review','author-replied','needs-review')" "$where"
   section "WAITING ON AUTHOR" "status IN ('waiting-author','commented')" "$where"
   section "APPROVED"          "status = 'approved'" "$where"
   section "MINE"              "status = 'mine'" "$where"
