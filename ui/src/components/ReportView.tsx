@@ -34,7 +34,7 @@ export function ReportView({ refId, full, onClose, refresh }: {
   useEffect(() => {
     const el = bodyRef.current
     if (!el || !r?.html) return
-    const norm = (t: string) => t.toLowerCase().replace(/[*`_|]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 40)
     const discarded = new Set((r.discards ?? []).filter(d => d.view === (r.view ?? 'original')).map(d => d.fkey))
     el.querySelectorAll('table').forEach(t => {
       const hdr = [...t.querySelectorAll('thead th')].map(x => x.textContent?.trim().toLowerCase() ?? '')

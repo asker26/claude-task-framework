@@ -467,16 +467,17 @@ cmd_post() {
   local fview=original; [[ "$optimized" == 1 ]] && fview=optimized
   DB_PATH="$DB" RID="$rid" FVIEW="$fview" python3 - "$tmp" <<'PYFILTER' || true
 import os, re, sqlite3, sys
-def norm(t): return re.sub(r"\s+", " ", re.sub(r"[*`_|]", "", t.lower())).strip()[:60]
+def alnum(t): return re.sub(r"[^a-z0-9]+", "", t.lower())
 path = sys.argv[1]
 con = sqlite3.connect(os.environ["DB_PATH"])
 rows = con.execute("SELECT excerpt FROM pr_finding_discards WHERE review_id = ? AND view = ? AND excerpt != ''",
                    (os.environ["RID"], os.environ["FVIEW"])).fetchall()
-excerpts = [norm(r[0]) for r in rows if r[0]]
+excerpts = [alnum(r[0])[:40] for r in rows if r[0]]
+excerpts = [e for e in excerpts if len(e) >= 12]
 if excerpts:
     out = []
     for line in open(path, encoding="utf-8", errors="replace").read().splitlines(True):
-        if line.lstrip().startswith("|") and any(e and e in norm(line) for e in excerpts):
+        if line.lstrip().startswith("|") and any(e in alnum(line) for e in excerpts):
             continue
         out.append(line)
     open(path, "w", encoding="utf-8").write("".join(out))
