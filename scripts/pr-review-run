@@ -56,6 +56,10 @@ release_worker_session() {
        UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $review_id AND cli_session_id IS NOT NULL);"
 }
 finish_staged() {
+  local auto; auto="$(setting_get auto_optimize)"; auto="${auto:-1}"
+  if [[ "$auto" != 0 ]]; then
+    "$ROOT/scripts/pr-optimize" "$report" || echo "auto-optimize failed — staging the original report" >&2
+  fi
   sql "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP, error = NULL WHERE id = $review_id;"
   release_worker_session
   notify_local "PR review staged" "$short · ${1:-verdict unparsed}"

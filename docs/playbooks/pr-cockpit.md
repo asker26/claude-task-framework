@@ -100,7 +100,9 @@ The worker's review prompt enforces the severity bar: a numbered finding must na
 that breaks; "state intent" / empty-PR-body / TDD-compliance asks are banned from findings (at most one
 'Process notes' line, never affecting the verdict). Optimize additionally strips any that slip through.
 
-`prctl optimize <ref>` (or the **Optimize** button) rewrites the report into a compact author-facing version —
+**Every finished review is auto-optimized before it lands in Staged** (`config auto_optimize`, default 1;
+set 0 to keep raw reports) — so staged reports open in the compact plain-words view and "post optimized"
+is pre-checked. `prctl optimize <ref>` (or the **Optimize** button) rewrites the report into a compact author-facing version —
 verdict + concrete findings only, all "none found"/process narration dropped — saved as `<report>-opt.md`.
 Each finding also gets an **"In plain words"** column (the `/efnpm` treatment: consequences not mechanisms,
 no jargon, PM units) and the summary gets a plain-words restatement — so the report reads at a glance.
