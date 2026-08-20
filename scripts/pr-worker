@@ -57,6 +57,20 @@ reap_stuck() {
     echo "reaped stuck review $rid (attempt $att)"
   done < <(sql_ro "SELECT id, pr_id, COALESCE(tmux_window, ''), COALESCE(pid, ''), attempts, COALESCE(report_path, '') FROM pr_reviews
                    WHERE status = 'running' AND heartbeat_at < datetime('now', '-$STUCK_MIN minutes');")
+  # fast tier: a run whose report is already complete should not wait the full stuck timeout —
+  # 3 silent minutes with the report on disk means the runner died at the finish line
+  while IFS='|' read -r rid prid rpid rpath; do
+    [[ -n "$rid" && -n "$rpath" && -s "$rpath" ]] || continue
+    [[ -n "$rpid" ]] && kill -0 "$rpid" 2>/dev/null && continue
+    grep -q '\*\*Verdict:\*\*' "$rpath" || continue
+    verdict="$(report_verdict "$rpath")"
+    [[ "$(setting_get auto_optimize)" != 0 && ! -s "${rpath%.md}-opt.md" ]] && { "$ROOT/scripts/pr-optimize" "$rpath" || true; }
+    sql "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$verdict"), finished_at = CURRENT_TIMESTAMP, error = 'runner died at finish; salvaged fast' WHERE id = $rid;"
+    release_review_session "$rid"
+    notify_local "PR review staged (salvaged)" "$(sql_ro "SELECT substr(repo, instr(repo,'/')+1)||'#'||number FROM prs WHERE id = $prid;") · ${verdict:-?}"
+    echo "fast-salvaged review $rid → staged ${verdict:-?}"
+  done < <(sql_ro "SELECT id, pr_id, COALESCE(pid, ''), COALESCE(report_path, '') FROM pr_reviews
+                   WHERE status = 'running' AND heartbeat_at < datetime('now', '-3 minutes');")
 }
 cooldown_active() {
   local until; until="$(setting_get worker_cooldown_until)"

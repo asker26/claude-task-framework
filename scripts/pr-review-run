@@ -56,25 +56,26 @@ release_worker_session() {
        UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id IN (SELECT cli_session_id FROM pr_reviews WHERE id = $review_id AND cli_session_id IS NOT NULL);"
 }
 finish_staged() {
-  local auto; auto="$(setting_get auto_optimize)"; auto="${auto:-1}"
+  local auto; auto="$(setting_get auto_optimize 2>/dev/null)"; auto="${auto:-1}"
   if [[ "$auto" != 0 ]]; then
-    "$ROOT/scripts/pr-optimize" "$report" || echo "auto-optimize failed — staging the original report" >&2
+    mark "auto-optimize starting"
+    "$ROOT/scripts/pr-optimize" "$report" || mark "auto-optimize failed — staging the original report"
   fi
-  sql "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP, error = NULL WHERE id = $review_id;"
-  release_worker_session
+  sqlr "UPDATE pr_reviews SET status = 'staged', verdict = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP, error = NULL WHERE id = $review_id;"
+  release_worker_session || true
   notify_local "PR review staged" "$short · ${1:-verdict unparsed}"
-  echo "=== staged: $report (${1:-verdict unparsed}) ==="
+  mark "staged: $report (${1:-verdict unparsed})"
 }
 finish_failed() {  # error, bump_attempts(0|1), requeue(0|1)
   local att
-  sql "UPDATE pr_reviews SET status = 'failed', error = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP$([[ "$2" == 1 ]] && printf ', attempts = attempts + 1') WHERE id = $review_id;"
-  release_worker_session
-  att="$(sql_ro "SELECT attempts FROM pr_reviews WHERE id = $review_id;")"
+  sqlr "UPDATE pr_reviews SET status = 'failed', error = $(sql_str "$1"), finished_at = CURRENT_TIMESTAMP$([[ "$2" == 1 ]] && printf ', attempts = attempts + 1') WHERE id = $review_id;"
+  release_worker_session || true
+  att="$(sql_ro "SELECT attempts FROM pr_reviews WHERE id = $review_id;" 2>/dev/null)"; att="${att:-2}"
   if [[ "$3" == 1 ]] && (( att < 2 )); then
-    sql "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts, notes) SELECT pr_id, head_sha, 'queued', $att, notes FROM pr_reviews WHERE id = $review_id;"
+    sqlr "INSERT INTO pr_reviews (pr_id, head_sha, status, attempts, notes) SELECT pr_id, head_sha, 'queued', $att, notes FROM pr_reviews WHERE id = $review_id;"
     echo "requeued (attempt $att)"
   fi
-  echo "=== failed: $1 ==="
+  mark "failed: $1"
 }
 
 model="${CTF_PR_CLAUDE_MODEL:-$(setting_get model)}"; model="${model:-claude-sonnet-5}"
@@ -96,18 +97,29 @@ CAFF=(); command -v caffeinate >/dev/null 2>&1 && CAFF=(caffeinate -is)   # Mac 
 set +eo pipefail
 "${CAFF[@]}" env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
   claude --dangerously-skip-permissions -p --output-format stream-json --verbose --model "$model" "$prompt" 2>&1 \
-| while IFS= read -r line; do
+| { last_hb=0
+  while IFS= read -r line; do
     printf '%s\n' "$line" | tee -a "$log"
-    sqlite3 -cmd '.timeout 5000' "$DB" "UPDATE pr_reviews SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = $review_id;" 2>/dev/null
+    now_s=$(date +%s)
+    if (( now_s - last_hb >= 10 )); then
+      sqlite3 -cmd '.timeout 5000' "$DB" "UPDATE pr_reviews SET heartbeat_at = CURRENT_TIMESTAMP WHERE id = $review_id;" 2>/dev/null && last_hb=$now_s
+    fi
     case "$line" in
       *'"subtype":"init"'*) sid="$(printf '%s' "$line" | jq -r '.session_id // empty' 2>/dev/null)"; [[ -n "$sid" ]] && register_worker_session "$sid" ;;
       *'"type":"result"'*)  printf '%s' "$line" | jq -r '.result // empty' 2>/dev/null > "$log.result" ;;
     esac
     if printf '%s' "$line" | grep -qiE "hit your (session |usage |weekly )?limit|rate_limit_error"; then touch "$log.cap"; fi
-  done
+  done; }
 exit_code=${PIPESTATUS[0]}
-set -eo pipefail
-echo "=== claude exited $exit_code ==="
+# stay in set +e territory: from here every failure is handled explicitly — a contended sqlite write
+# under set -e used to kill the runner right here, leaving finished reports stuck in 'running'
+mark() { echo "[runner] $1" | tee -a "$log"; }
+sqlr() {
+  local i
+  for i in 1 2 3 4 5; do sql "$1" 2>>"$log" && return 0; sleep "$i"; done
+  mark "sql failed after retries: ${1:0:80}"; return 1
+}
+mark "claude exited $exit_code"
 
 if [[ -f "$log.cap" ]]; then
   setting_set worker_cooldown_until "$(cooldown_until_from_text "$(cat "$log")")"

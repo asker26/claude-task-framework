@@ -607,11 +607,13 @@ cmd_log() {  # follows while the review is running; plain dump once it has finis
   [[ -n "${log:-}" && -f "$log" ]] || { echo "no review log for $(pr_ref_of_id "$id")" >&2; exit 1; }
   [[ "$status" == running ]] && follow=(-f)
   echo "== $log ($status) =="
-  tail -n +1 ${follow[@]+"${follow[@]}"} "$log" | jq --unbuffered -r '
-    if .type == "system" and .subtype == "init" then "[init] model " + (.model // "?") + " session " + (.session_id // "?")
-    elif .type == "assistant" then (.message.content[]? | if .type == "tool_use" then "→ " + .name + ": " + ((.input.description // .input.skill // .input.command // .input.prompt // .input.file_path // "") | tostring | gsub("\n"; " ") | .[0:160]) elif .type == "text" then "… " + (.text | gsub("\n"; " ") | .[0:200]) else empty end)
-    elif .type == "result" then "[result] " + (.subtype // "") + " · " + ((.result // "") | tostring | .[0:200])
-    else empty end' 2>/dev/null
+  tail -n +1 ${follow[@]+"${follow[@]}"} "$log" | jq --unbuffered -R -r '
+    . as $raw | (try fromjson catch null) as $j |
+    if $j == null then (if ($raw | startswith("[runner]")) then $raw else empty end)
+    elif $j.type == "system" and $j.subtype == "init" then "[init] model " + ($j.model // "?") + " session " + ($j.session_id // "?")
+    elif $j.type == "assistant" then ($j.message.content[]? | if .type == "tool_use" then "→ " + .name + ": " + ((.input.description // .input.skill // .input.command // .input.prompt // .input.file_path // "") | tostring | gsub("\n"; " ") | .[0:160]) elif .type == "text" then "… " + (.text | gsub("\n"; " ") | .[0:200]) else empty end)
+    elif $j.type == "result" then "[result] " + ($j.subtype // "") + " · " + (($j.result // "") | tostring | .[0:200])
+    else empty end' 2>/dev/null || true
 }
 cmd_history() {
   local days=2

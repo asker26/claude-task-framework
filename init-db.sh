@@ -12,6 +12,7 @@ if [[ -f "$DB" ]]; then
   exit 1
 fi
 
+sqlite3 "$DB" "PRAGMA journal_mode=WAL;" >/dev/null
 sqlite3 "$DB" <<'SQL'
 -- Organizations: group projects under a team/company
 CREATE TABLE organizations (

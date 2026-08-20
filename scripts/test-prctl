@@ -356,7 +356,7 @@ chk "session_model accepts opus-5"      "\"\$PRCTL\" config set session_model cl
 rm -f "$FAKE_DIR/bin/tmux"
 chk "prctl watch --once renders"             "\"\$PRCTL\" watch --once | has 'STAGED'"
 chk "prctl history lists runs"               "\"\$PRCTL\" history | has 'alpha#2'"
-chk "prctl log prints readable stream"       "\"\$PRCTL\" log alpha#2 2>/dev/null | head -3 | has 'init'"
+chk "prctl log prints readable stream"       "\"\$PRCTL\" log alpha#2 2>/dev/null | has 'init'"
 chk "prctl worker delegates"                "\"\$PRCTL\" worker status | has 'worker: stopped'"
 unset FAKE_CLAUDE_MODE
 

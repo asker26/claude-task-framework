@@ -17,6 +17,8 @@ if [[ -n "$(sqlite3 "$DB" "SELECT 1 FROM pragma_table_info('pr_reviews') WHERE n
   sqlite3 "$DB" "ALTER TABLE pr_reviews ADD COLUMN notes TEXT;"
 fi
 
+sqlite3 "$DB" "PRAGMA journal_mode=WAL;" >/dev/null
+
 sqlite3 "$DB" <<'SQL'
 CREATE TABLE IF NOT EXISTS prs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

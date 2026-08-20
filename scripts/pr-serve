@@ -367,6 +367,8 @@ def log_text(ref):
         try:
             ev = json.loads(line)
         except ValueError:
+            if line.startswith("[runner]"):
+                out.append(line)
             continue
         if ev.get("type") == "system" and ev.get("subtype") == "init":
             out.append(f"[init] model {ev.get('model')} session {ev.get('session_id')}")
