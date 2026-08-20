@@ -28,7 +28,7 @@ export function RunningCards({ running, refresh, openLog }: {
                 void A.run({ action: 'abort', ref: r.ref }, refresh)
             }}><OctagonX className="size-3" />abort</Button>
             <Button size="sm" onClick={() => void A.takeOver(r.ref, refresh)}><Hand className="size-3" />take over</Button>
-            <a href={`/term?win=${winName('review', r.ref)}`} target="_blank" rel="noreferrer">
+            <a href={`/term?win=${winName('review', r.ref)}&ref=${encodeURIComponent(r.ref)}`} target="_blank" rel="noreferrer">
               <Button size="sm"><SquareTerminal className="size-3" />web term</Button>
             </a>
           </div>

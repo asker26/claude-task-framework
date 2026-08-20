@@ -163,7 +163,7 @@ export function ReportView({ refId, full, onClose, refresh }: {
         <CheckboxLabel label="admin" checked={admin} onChange={e => setAdmin(e.target.checked)} />
         <Button size="sm" onClick={() => void A.takeOver(refId, refresh)}>Take over</Button>
         <Button size="sm" onClick={() => void A.workOn(refId, refresh)}>Work on it</Button>
-        <a href={`/term?win=${winName('work', refId)}`} target="_blank" rel="noreferrer"><Button size="sm">web term</Button></a>
+        <a href={`/term?win=${winName('work', refId)}&ref=${encodeURIComponent(refId)}`} target="_blank" rel="noreferrer"><Button size="sm">web term</Button></a>
         {onClose && <Button size="sm" onClick={onClose}>Close</Button>}
         {full && <a href="/"><Button size="sm">back to cockpit</Button></a>}
       </div>

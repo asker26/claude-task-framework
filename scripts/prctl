@@ -194,7 +194,7 @@ cmd_takeover() {
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$dir" \
-      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "Interactive review of PR #$num of $repo, directed by the lead. Start with /reviewer-ultra $num $repo and adjust to my directions as we go. Do not post to GitHub unless I explicitly say so.${notes:+ Initial directions: $notes}")"
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "Interactive review of PR #$num of $repo, directed by the lead. Start with /reviewer-ultra $num $repo and adjust to my directions as we go. Do not post to GitHub unless I explicitly say so.${notes:+ Initial directions: $notes}"); echo; echo '[claude exited — press enter to close this window]'; read -r"
   fi
   if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
     osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
@@ -319,7 +319,7 @@ cmd_work() {
   tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
   if ! tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx "$win"; then
     tmux new-window -d -t "$TMUX_SESSION" -n "$win" -c "$cwd" \
-      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "$prompt")"
+      "env -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT claude --model $(session_model) $(printf '%q' "$prompt"); echo; echo '[claude exited — press enter to close this window]'; read -r"
   fi
   if command -v osascript >/dev/null 2>&1 && [[ -z "${CTF_NO_TERMINAL:-}" ]]; then
     osascript -e "tell application \"Terminal\" to do script \"tmux attach -t $TMUX_SESSION:$win\"" -e 'tell application "Terminal" to activate' >/dev/null 2>&1 || true
