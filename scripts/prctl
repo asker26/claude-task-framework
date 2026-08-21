@@ -253,6 +253,13 @@ cmd_merge() {
   done
   method="${method:-$(setting_get merge_method)}"; method="${method:-squash}"
   case "$method" in merge|squash|rebase) ;; *) echo "bad method '$method' (merge|squash|rebase)" >&2; exit 1 ;; esac
+  local allowed
+  allowed="$(gh api "repos/$(sql_ro "SELECT repo FROM prs WHERE id = $id;")" \
+             --jq '[(if .allow_squash_merge then "squash" else empty end), (if .allow_merge_commit then "merge" else empty end), (if .allow_rebase_merge then "rebase" else empty end)] | join(" ")' 2>/dev/null || true)"
+  if [[ -n "$allowed" && " $allowed " != *" $method "* ]]; then
+    echo "note: repo does not allow '$method' merges — using '${allowed%% *}' instead" >&2
+    method="${allowed%% *}"
+  fi
   "$ROOT/scripts/pr-sync" --pr "$(pr_ref_of_id "$id")" >/dev/null 2>&1 || true
   IFS='|' read -r repo num title state is_draft mergeable checks head_ref < <(sql_ro "SELECT repo, number, COALESCE(title,''), state, is_draft, COALESCE(mergeable,''), COALESCE(checks,''), COALESCE(head_ref,'') FROM prs WHERE id = $id;")
   [[ "$state" == open ]] || { echo "PR is $state — nothing to merge" >&2; exit 1; }
