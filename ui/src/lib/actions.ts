@@ -6,11 +6,24 @@ export function useActions() {
   const toast = useToast()
   const { confirmDlg, promptDlg } = useDialogs()
 
-  const run = async (payload: Record<string, unknown>, refresh?: () => void) => {
+  const run = async (payload: Record<string, unknown>, refresh?: () => void): Promise<{ ok: boolean; output: string }> => {
     toast(`… ${payload.action}${payload.ref ? ` ${payload.ref}` : ''}`)
     const r = await act(payload)
     toast(`${r.ok ? '✓' : '✗'} ${r.output}`)
     refresh?.()
+    if (!r.ok) {
+      if (payload.action === 'merge' && !payload.admin && /--admin/.test(r.output)) {
+        const retry = await confirmDlg({
+          title: `Branch protection blocked the merge of ${payload.ref}`,
+          body: `${r.output}\n\nRetry with the admin override?`,
+          confirmText: 'Merge with --admin',
+          destructive: true,
+        })
+        if (retry) return run({ ...payload, admin: true }, refresh)
+      } else {
+        await confirmDlg({ title: `${String(payload.action)} failed`, body: r.output, confirmText: 'OK' })
+      }
+    }
     return r
   }
 
