@@ -34,6 +34,7 @@ export function ReportView({ refId, full, onClose, refresh }: {
   useEffect(() => {
     const el = bodyRef.current
     if (!el || !r?.html) return
+    el.innerHTML = r.html // rebuild from source: decoration must be idempotent across discard/undiscard reloads
     const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 40)
     const discarded = new Set((r.discards ?? []).filter(d => d.view === (r.view ?? 'original')).map(d => d.fkey))
     el.querySelectorAll('table').forEach(t => {
