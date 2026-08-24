@@ -39,7 +39,7 @@ export function ReportView({ refId, full, onClose, refresh }: {
     const discarded = new Set((r.discards ?? []).filter(d => d.view === (r.view ?? 'original')).map(d => d.fkey))
     el.querySelectorAll('table').forEach(t => {
       const hdr = [...t.querySelectorAll('thead th')].map(x => x.textContent?.trim().toLowerCase() ?? '')
-      const fi = hdr.indexOf('finding')
+      const fi = hdr.findIndex(h => h.startsWith('finding'))
       if (fi < 0) return
       const fl = hdr.findIndex(h => h.startsWith('file'))
       t.querySelector('thead tr')?.appendChild(document.createElement('th'))
