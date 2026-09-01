@@ -25,7 +25,7 @@ usage: prctl <command> [args]
   skip <ref> [--days N] [--reason T] | unskip <ref>
   claim <ref> [--note T] | release [<ref>|--all] | sessions [--all|--prune] | whoami | label <text>
       (session = $CLAUDE_CODE_SESSION_ID, or --session <id>)
-  worker start [--sync-only|--queue-only] | stop | status
+  worker start [--sync-only|--queue-only] | stop | status | resume (end a session-cap cooldown early)
   serve [--port N] [--bg] | serve stop             local web UI (board, live status, rendered reports, post/discard/skip buttons)
   watch [--once] [--interval N]                    live dashboard: worker, current review + last action, queue, staged, recent
   log <ref>                                        readable live tail of a running/finished review session

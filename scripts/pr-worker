@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PR cockpit worker: keeps the board synced and runs reviewer-ultra on PRs that need review, one at a time.
-# usage: pr-worker start [--sync-only|--queue-only] | stop | status | run [...] | cycle [...] [--inline]
+# usage: pr-worker start [--sync-only|--queue-only] | stop | status | resume | run [...] | cycle [...] [--inline]
 #   --sync-only  keep the board fresh, never run reviews      --queue-only  run only reviews queued with `prctl review`
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/pr-lib.sh"
@@ -146,7 +146,14 @@ case "$cmd" in
     echo "worker: $(worker_state_text)"
     sql_table "SELECT r.id, substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number AS ref, r.status, r.attempts, r.heartbeat_at, r.tmux_window
                FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status IN ('queued', 'running') ORDER BY r.status DESC, r.id;" ;;
+  resume)
+    if [[ -n "$(setting_get worker_cooldown_until)" ]]; then
+      setting_del worker_cooldown_until
+      echo "cooldown cleared — the worker picks from the queue on its next cycle (≤${POLL}s)"
+    else
+      echo "no cooldown active"
+    fi ;;
   run)   run_loop ;;
   cycle) cycle ;;
-  *) echo "usage: pr-worker start [--sync-only|--queue-only] | stop | status | run | cycle [--inline]" >&2; exit 1 ;;
+  *) echo "usage: pr-worker start [--sync-only|--queue-only] | stop | status | resume | run | cycle [--inline]" >&2; exit 1 ;;
 esac
