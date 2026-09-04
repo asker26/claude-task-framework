@@ -7,7 +7,9 @@ import { GitMerge } from 'lucide-react'
 
 function RowButtons({ b, refresh }: { b: BoardRow; refresh: () => void }) {
   const A = useActions()
-  const canQueue = ['needs-review', 're-review', 'author-replied', 'review-failed', 'commented', 'waiting-author', 'approved'].includes(b.status)
+  // 'mine' included: the worker queues an own PR fine, and only posting is
+  // special-cased (GitHub forbids self-review, so prctl posts a comment).
+  const canQueue = ['needs-review', 're-review', 'author-replied', 'review-failed', 'commented', 'waiting-author', 'approved', 'mine'].includes(b.status)
   return (
     <span className="flex justify-end gap-1">
       {(b.status === 'approved' || b.status === 'mine') && !!b.ready && (
