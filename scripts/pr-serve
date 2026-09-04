@@ -43,6 +43,11 @@ ACTIONS = {  # action → prctl argv builder (only these are reachable from the 
     "worker":   lambda p: ["worker", {"start": "start", "start-queue": "start", "stop": "stop"}[p["mode"]]] + (["--queue-only"] if p["mode"] == "start-queue" else []),
 }
 
+# A staged report is superseded once a newer review is queued or running for the
+# same PR: posting it would publish a verdict on a diff that is already being re-read.
+SUPERSEDED = (" AND NOT EXISTS (SELECT 1 FROM pr_reviews n WHERE n.pr_id = r.pr_id"
+              " AND n.id > r.id AND n.status IN ('queued', 'running'))")
+
 
 def db():
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
@@ -152,7 +157,7 @@ def state():
         q["ref"] = short_ref(q["repo"], q["number"])
     staged = rows("SELECT r.id, p.repo, p.number, p.title, p.url, p.changed_files, p.additions, p.deletions, r.verdict, (r.head_sha <> p.head_sha) AS behind, r.finished_at, "
                   "CAST((julianday('now') - julianday(r.finished_at)) * 60 AS INTEGER) AS mins_ago, p.author "
-                  "FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'staged' ORDER BY r.finished_at DESC")
+                  "FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'staged'" + SUPERSEDED + " ORDER BY r.finished_at DESC")
     for s in staged:
         s["ref"] = short_ref(s["repo"], s["number"])
     history = rows("SELECT r.id, p.repo, p.number, r.status, r.verdict, r.attempts, r.error, r.started_at, r.finished_at, r.posted_at, "

@@ -137,10 +137,10 @@ base AS (
            cfg.stale_author_days, cfg.stale_days,
            CASE
              WHEN p.skip_until IS NOT NULL AND p.skip_until > datetime('now') THEN 'skipped'
-             WHEN p.author = cfg.me THEN 'mine'
-             WHEN p.is_draft = 1 THEN 'draft'
              WHEN a.status IN ('queued', 'running') THEN 'running'
              WHEN a.status = 'staged' THEN 'staged'
+             WHEN p.author = cfg.me THEN 'mine'
+             WHEN p.is_draft = 1 THEN 'draft'
              WHEN a.status = 'failed' AND a.attempts >= 2 THEN 'review-failed'
              WHEN p.my_review_sha IS NOT NULL AND p.my_review_sha <> p.head_sha THEN 're-review'
              WHEN p.my_review_sha IS NULL THEN 'needs-review'

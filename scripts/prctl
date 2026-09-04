@@ -205,7 +205,7 @@ cmd_staged() {
   sql_table "SELECT r.id, substr(p.repo, instr(p.repo, '/') + 1) || '#' || p.number AS ref, COALESCE(r.verdict, '?') AS verdict,
                     CASE WHEN r.head_sha <> p.head_sha THEN 'behind' ELSE 'at-head' END AS sha,
                     CAST((julianday('now') - julianday(r.finished_at)) * 24 AS INTEGER) || 'h' AS age, r.report_path
-             FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'staged' ORDER BY r.finished_at;"
+             FROM pr_reviews r JOIN prs p ON p.id = r.pr_id WHERE r.status = 'staged' AND NOT EXISTS (SELECT 1 FROM pr_reviews n WHERE n.pr_id = r.pr_id AND n.id > r.id AND n.status IN ('queued', 'running')) ORDER BY r.finished_at;"
 }
 cmd_read() {
   local id rid path
@@ -594,7 +594,7 @@ render_watch() {
   echo
   echo "STAGED — read/post"
   sql_ro "SELECT '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  ' || COALESCE(r.verdict,'?') || CASE WHEN r.head_sha<>p.head_sha THEN ' (behind)' ELSE '' END || '  ' || CAST((julianday('now') - julianday(r.finished_at)) * 24 AS INTEGER) || 'h ago  ' || COALESCE(p.title,'')
-          FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='staged' ORDER BY r.finished_at DESC;" | cut -c1-140 | grep . || echo "  (none)"
+          FROM pr_reviews r JOIN prs p ON p.id=r.pr_id WHERE r.status='staged' AND NOT EXISTS (SELECT 1 FROM pr_reviews n WHERE n.pr_id = r.pr_id AND n.id > r.id AND n.status IN ('queued', 'running')) ORDER BY r.finished_at DESC;" | cut -c1-140 | grep . || echo "  (none)"
   echo
   echo "LAST 24H"
   sql_ro "SELECT '  ' || substr(COALESCE(r.finished_at, r.started_at),12,5) || '  ' || substr(p.repo, instr(p.repo,'/')+1)||'#'||p.number || '  ' || r.status || COALESCE(' ' || r.verdict, '') || COALESCE(' — ' || substr(r.error,1,60), '')
