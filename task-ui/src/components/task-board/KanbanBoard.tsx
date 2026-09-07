@@ -61,7 +61,7 @@ function KanbanColumn({ status, filters, collapsed, onToggle, onTaskClick }: Kan
             </>
           )}
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} onClick={onTaskClick} />
+            <TaskCard key={task.id} task={task} onClick={onTaskClick} className="shrink-0" />
           ))}
           {!isLoading && tasks.length === 0 && (
             <p className="py-6 text-center text-xs text-muted-foreground">No tasks</p>
