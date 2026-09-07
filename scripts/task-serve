@@ -1,0 +1,355 @@
+#!/usr/bin/env python3
+"""Local web UI backend for the task dashboard: read-only JSON API over tasks.db + static file serving.
+No mutations here — every write happens through taskctl/agent-dispatch; this process only opens the DB read-only.
+usage: task-serve [--port N] [--host 127.0.0.1]   (taskctl serve wraps this)
+"""
+import json
+import os
+import re
+import sqlite3
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB = os.environ.get("TASK_DB_PATH", os.path.join(ROOT, "tasks.db"))
+STUCK_TIMEOUT = int(os.environ.get("CTF_STUCK_TIMEOUT", "10"))
+STUCK_MOD = f"-{STUCK_TIMEOUT} minutes"
+
+UI_DIST = os.path.join(ROOT, "task-ui", "dist")
+MIME = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".map": "application/json",
+        ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2"}
+
+
+def db():
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
+    con.row_factory = sqlite3.Row
+    return con
+
+
+def rows(sql, args=()):
+    with db() as con:
+        return [dict(r) for r in con.execute(sql, args).fetchall()]
+
+
+def one(sql, args=()):
+    with db() as con:
+        r = con.execute(sql, args).fetchone()
+        return dict(r) if r else None
+
+
+def scalar(sql, args=()):
+    with db() as con:
+        r = con.execute(sql, args).fetchone()
+        return r[0] if r else None
+
+
+def parse_depends_on(raw):
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    out = []
+    for x in data if isinstance(data, list) else []:
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def qs1(q, key, default=None):
+    v = q.get(key)
+    return v[0] if v else default
+
+
+# ---------------------------------------------------------------- agents (denormalized)
+def latest_agents_for_tasks(task_ids):
+    """task_id -> {id, worker_name, status, heartbeat_age_s, stuck, tmux_pane, started_at}
+    for tasks whose most recent agent attempt is still active (pending/running); absent otherwise."""
+    if not task_ids:
+        return {}
+    placeholders = ",".join("?" for _ in task_ids)
+    sql = f"""
+        SELECT a.id, a.task_id, a.worker_name, a.status, a.tmux_pane, a.started_at,
+               CAST((julianday('now') - julianday(a.heartbeat_at)) * 86400 AS INTEGER) AS heartbeat_age_s,
+               CASE WHEN a.status = 'running' AND a.heartbeat_at < datetime('now', ?) THEN 1 ELSE 0 END AS stuck
+        FROM agents a
+        WHERE a.id IN (SELECT MAX(id) FROM agents WHERE task_id IN ({placeholders}) GROUP BY task_id)
+          AND a.status IN ('pending', 'running')
+    """
+    out = {}
+    for r in rows(sql, [STUCK_MOD, *task_ids]):
+        r["stuck"] = bool(r.pop("stuck"))
+        out[r.pop("task_id")] = r
+    return out
+
+
+# ---------------------------------------------------------------- tasks
+TASK_LIST_SELECT = """
+    SELECT t.id, t.title, t.type, t.status, t.priority, t.project_id, p.name AS project_name,
+           t.sprint_id, sp.name AS sprint_name, t.parent_task_id, t.due_date, t.depends_on,
+           t.assigned_agent_id, ap.name AS assigned_agent_name, t.created_at, t.updated_at
+    FROM tasks t
+    LEFT JOIN projects p ON p.id = t.project_id
+    LEFT JOIN sprints sp ON sp.id = t.sprint_id
+    LEFT JOIN agent_profiles ap ON ap.id = t.assigned_agent_id
+"""
+
+
+def fetch_tasks(where, args, order_by, limit=None):
+    sql = f"{TASK_LIST_SELECT} WHERE {where} ORDER BY {order_by}"
+    q_args = list(args)
+    if limit is not None:
+        sql += " LIMIT ?"
+        q_args.append(limit)
+    task_rows = rows(sql, q_args)
+    latest = latest_agents_for_tasks([r["id"] for r in task_rows])
+    for r in task_rows:
+        r["depends_on"] = parse_depends_on(r["depends_on"])
+        r["running_agent"] = latest.get(r["id"])
+    return task_rows
+
+
+def api_tasks(q):
+    where, args = ["1=1"], []
+    project_id = qs1(q, "project_id")
+    if project_id:
+        where.append("t.project_id = ?"); args.append(int(project_id))
+    org_id = qs1(q, "org_id")
+    if org_id:
+        where.append("p.organization_id = ?"); args.append(int(org_id))
+    sprint_id = qs1(q, "sprint_id")
+    if sprint_id:
+        where.append("t.sprint_id = ?"); args.append(int(sprint_id))
+    status = qs1(q, "status")
+    if status:
+        where.append("t.status = ?"); args.append(status)
+    priority = qs1(q, "priority")
+    if priority:
+        where.append("t.priority = ?"); args.append(priority)
+    search = qs1(q, "q")
+    if search:
+        where.append("(t.title LIKE ? OR t.notes LIKE ?)")
+        like = f"%{search}%"
+        args += [like, like]
+    due_date_from = qs1(q, "due_date_from")
+    if due_date_from:
+        where.append("t.due_date >= ?"); args.append(due_date_from)
+    due_date_to = qs1(q, "due_date_to")
+    if due_date_to:
+        where.append("t.due_date <= ?"); args.append(due_date_to)
+    agent_state = qs1(q, "agent_state")
+    if agent_state == "running":
+        where.append("EXISTS (SELECT 1 FROM agents la WHERE la.id = (SELECT MAX(id) FROM agents WHERE task_id = t.id) AND la.status = 'running')")
+    elif agent_state == "stuck":
+        where.append("EXISTS (SELECT 1 FROM agents la WHERE la.id = (SELECT MAX(id) FROM agents WHERE task_id = t.id) AND la.status = 'running' AND la.heartbeat_at < datetime('now', ?))")
+        args.append(STUCK_MOD)
+    if qs1(q, "include_done") != "1" and status != "done":
+        where.append("t.status != 'done'")
+
+    where_sql = " AND ".join(where)
+    total = scalar(f"SELECT COUNT(*) FROM tasks t LEFT JOIN projects p ON p.id = t.project_id WHERE {where_sql}", args)
+
+    limit = int(qs1(q, "limit") or 30)
+    cursor = qs1(q, "cursor")
+    page_where, page_args = where_sql, list(args)
+    if cursor:
+        page_where += " AND t.id > ?"
+        page_args.append(int(cursor))
+
+    fetched = fetch_tasks(page_where, page_args, "t.id ASC", limit=limit + 1)
+    has_more = len(fetched) > limit
+    task_rows = fetched[:limit]
+    # must be a returned id, not the peeked row's — else "t.id > cursor" skips a row
+    next_cursor = task_rows[-1]["id"] if has_more and task_rows else None
+    return {"tasks": task_rows, "next_cursor": next_cursor, "total": total}
+
+
+def task_detail(task_id):
+    t = one("""
+        SELECT t.*, p.name AS project_name, sp.name AS sprint_name,
+               ap.name AS assigned_agent_name, ap.role AS assigned_agent_role
+        FROM tasks t
+        LEFT JOIN projects p ON p.id = t.project_id
+        LEFT JOIN sprints sp ON sp.id = t.sprint_id
+        LEFT JOIN agent_profiles ap ON ap.id = t.assigned_agent_id
+        WHERE t.id = ?
+    """, (task_id,))
+    if not t:
+        return None
+    t["depends_on"] = parse_depends_on(t["depends_on"])
+    project_name = t.pop("project_name")
+    t["project"] = {"id": t["project_id"], "name": project_name} if t["project_id"] else None
+    sprint_name = t.pop("sprint_name")
+    t["sprint"] = {"id": t["sprint_id"], "name": sprint_name} if t["sprint_id"] else None
+    agent_name = t.pop("assigned_agent_name")
+    agent_role = t.pop("assigned_agent_role")
+    t["assigned_agent"] = {"id": t["assigned_agent_id"], "name": agent_name, "role": agent_role} if t["assigned_agent_id"] else None
+    t["parent"] = one("SELECT id, title, status FROM tasks WHERE id = ?", (t["parent_task_id"],)) if t["parent_task_id"] else None
+    t["subtasks"] = rows("SELECT id, title, status FROM tasks WHERE parent_task_id = ? ORDER BY id", (task_id,))
+    if t["depends_on"]:
+        ph = ",".join("?" for _ in t["depends_on"])
+        t["depends_on_tasks"] = rows(f"SELECT id, title, status FROM tasks WHERE id IN ({ph}) ORDER BY id", tuple(t["depends_on"]))
+    else:
+        t["depends_on_tasks"] = []
+    t["running_agent"] = latest_agents_for_tasks([task_id]).get(task_id)
+    t["agent_history"] = rows("SELECT * FROM agents WHERE task_id = ? ORDER BY id DESC", (task_id,))
+    t["status_history"] = rows("SELECT from_status, to_status, changed_at FROM task_status_changes WHERE task_id = ? ORDER BY id DESC", (task_id,))
+    return t
+
+
+# ---------------------------------------------------------------- projects / sprints / agents
+def api_projects():
+    return rows("""
+        SELECT p.id, p.name, p.organization_id AS org_id, o.name AS org_name,
+               p.github_repo, p.local_path, p.description,
+               (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+               (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status != 'done') AS open_task_count,
+               (SELECT s.id FROM sprints s WHERE s.project_id = p.id AND s.status = 'active' ORDER BY s.id DESC LIMIT 1) AS active_sprint_id,
+               (SELECT s.name FROM sprints s WHERE s.project_id = p.id AND s.status = 'active' ORDER BY s.id DESC LIMIT 1) AS active_sprint_name
+        FROM projects p
+        LEFT JOIN organizations o ON o.id = p.organization_id
+        ORDER BY p.name
+    """)
+
+
+SPRINT_SELECT = """
+    SELECT s.id, s.name, s.project_id, p.name AS project_name, s.goal, s.status, s.start_date, s.end_date,
+           (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id AND t.status = 'done') AS done,
+           (SELECT COUNT(*) FROM tasks t WHERE t.sprint_id = s.id) AS total
+    FROM sprints s
+    LEFT JOIN projects p ON p.id = s.project_id
+"""
+SPRINT_ORDER = "CASE s.status WHEN 'active' THEN 1 WHEN 'planned' THEN 2 WHEN 'completed' THEN 3 ELSE 4 END, s.id DESC"
+
+
+def api_sprints(q):
+    project_id = qs1(q, "project_id")
+    if project_id:
+        return rows(f"{SPRINT_SELECT} WHERE s.project_id = ? ORDER BY {SPRINT_ORDER}", (int(project_id),))
+    return rows(f"{SPRINT_SELECT} ORDER BY {SPRINT_ORDER}")
+
+
+def sprint_detail(sprint_id):
+    s = one(f"{SPRINT_SELECT} WHERE s.id = ?", (sprint_id,))
+    if not s:
+        return None
+    s["tasks"] = fetch_tasks(
+        "t.sprint_id = ?", (sprint_id,),
+        "CASE t.status WHEN 'in-progress' THEN 1 WHEN 'todo' THEN 2 WHEN 'in-review' THEN 3 "
+        "WHEN 'approved' THEN 4 WHEN 'testing' THEN 5 WHEN 'paused' THEN 6 WHEN 'done' THEN 7 ELSE 8 END, "
+        "CASE t.priority WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END")
+    return s
+
+
+def api_agents(q):
+    state = qs1(q, "state")
+    where, where_args = "a.status IN ('pending', 'running')", []
+    if state == "running":
+        where = "a.status = 'running'"
+    elif state == "stuck":
+        where, where_args = "a.status = 'running' AND a.heartbeat_at < datetime('now', ?)", [STUCK_MOD]
+    out = rows(f"""
+        SELECT a.id, a.task_id, t.title AS task_title, p.name AS project_name, a.worker_name, a.status,
+               CAST((julianday('now') - julianday(a.heartbeat_at)) * 86400 AS INTEGER) AS heartbeat_age_s,
+               CASE WHEN a.status = 'running' AND a.heartbeat_at < datetime('now', ?) THEN 1 ELSE 0 END AS stuck,
+               a.started_at, a.retry_count, a.tmux_pane
+        FROM agents a
+        JOIN tasks t ON t.id = a.task_id
+        LEFT JOIN projects p ON p.id = t.project_id
+        WHERE {where}
+        ORDER BY a.started_at DESC
+    """, [STUCK_MOD, *where_args])
+    for r in out:
+        r["stuck"] = bool(r["stuck"])
+    return out
+
+
+# ---------------------------------------------------------------- HTTP
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        if os.environ.get("TASK_SERVE_LOG"):
+            super().log_message(fmt, *args)
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+        data = body if isinstance(body, bytes) else (json.dumps(body) if ctype.startswith("application/json") else body).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_static(self, rel):
+        path = os.path.normpath(os.path.join(UI_DIST, rel))
+        if not path.startswith(UI_DIST) or not os.path.isfile(path):
+            if rel == "index.html":
+                return self._send(404, "task dashboard UI is not built — run: cd task-ui && npm install && npm run build", "text/plain; charset=utf-8")
+            return self._send(404, {"error": "not found"})
+        with open(path, "rb") as f:
+            data = f.read()
+        ctype = MIME.get(os.path.splitext(path)[1], "application/octet-stream")
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store" if rel == "index.html" else "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        u = urlparse(self.path)
+        q = parse_qs(u.query)
+        m_sprint = re.match(r"^/api/sprints/(\d+)$", u.path)
+        m_task = re.match(r"^/api/tasks/(\d+)$", u.path)
+        try:
+            if u.path == "/api/projects":
+                self._send(200, api_projects())
+            elif u.path == "/api/sprints":
+                self._send(200, api_sprints(q))
+            elif m_sprint:
+                d = sprint_detail(int(m_sprint.group(1)))
+                self._send(200, d) if d is not None else self._send(404, {"error": "not found"})
+            elif u.path == "/api/tasks":
+                self._send(200, api_tasks(q))
+            elif m_task:
+                d = task_detail(int(m_task.group(1)))
+                self._send(200, d) if d is not None else self._send(404, {"error": "not found"})
+            elif u.path == "/api/agents":
+                self._send(200, api_agents(q))
+            elif u.path.startswith("/assets/"):
+                self._serve_static(u.path.lstrip("/"))
+            elif u.path.startswith("/api/"):
+                self._send(404, {"error": "not found"})
+            else:
+                self._serve_static("index.html")
+        except Exception as e:  # keep the page alive on any single failure
+            self._send(500, {"error": str(e)})
+
+
+def main():
+    host, port = "127.0.0.1", 7788
+    args = sys.argv[1:]
+    while args:
+        a = args.pop(0)
+        if a == "--port":
+            port = int(args.pop(0))
+        elif a == "--host":
+            host = args.pop(0)
+        else:
+            print(__doc__); sys.exit(1)
+    if not os.path.exists(DB):
+        print(f"tasks.db not found at {DB}", file=sys.stderr); sys.exit(1)
+    srv = ThreadingHTTPServer((host, port), Handler)
+    print(f"Task dashboard listening on http://{host}:{srv.server_address[1]}", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

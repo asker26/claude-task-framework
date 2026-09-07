@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${TASK_DB_PATH:-$ROOT/tasks.db}"
+TMUX_SESSION="${CTF_TMUX_SESSION:-ctf-agents}"
 
 if [[ ! -f "$DB" ]]; then
   echo "tasks.db not found at: $DB" >&2
@@ -485,6 +486,30 @@ case "$cmd" in
     sql_read "SELECT id, name, role, COALESCE(auto_assign_types, '-') as auto_types FROM agent_profiles ORDER BY id;"
     ;;
 
+  serve)
+    tui_port="${CTF_TASK_UI_PORT:-7788}"
+    tui_bg=0
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        stop) tmux kill-window -t "$TMUX_SESSION:task-serve" 2>/dev/null && echo "UI stopped" || echo "UI not running in tmux"; exit 0 ;;
+        --port) tui_port="$2"; shift 2 ;;
+        --bg) tui_bg=1; shift ;;
+        *) echo "unknown option $1" >&2; exit 1 ;;
+      esac
+    done
+    if [[ "$tui_bg" == 1 ]]; then
+      tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n shell
+      if tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | grep -qx task-serve; then
+        echo "UI already running: http://127.0.0.1:$tui_port"
+        exit 0
+      fi
+      tmux new-window -d -t "$TMUX_SESSION" -n task-serve "$ROOT/scripts/task-serve --port $tui_port"
+      echo "UI running in tmux $TMUX_SESSION:task-serve → http://127.0.0.1:$tui_port   (taskctl serve stop)"
+      exit 0
+    fi
+    exec "$ROOT/scripts/task-serve" --port "$tui_port"
+    ;;
+
   merge)
     merge_task_id="${1:-}"
     if [[ -z "$merge_task_id" ]]; then
@@ -852,6 +877,7 @@ commands:
   set-status <id> <status>           Update task status
   log <id> <status> [--notes ...]    Status change with audit log
   agents                             List agent profiles
+  serve [--port N] [--bg] | serve stop   Local web dashboard (read-only board/sprints/tasks/agents UI)
   assign <task_id> <agent_name>      Assign task to named agent
   merge <task_id>                    Merge approved task branch to main
   merge-all                          Merge all approved tasks
