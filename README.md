@@ -273,6 +273,24 @@ them from `init-db.sh`. Session hooks: `scripts/install-pr-hooks.sh`. Tests: `sc
 (offline — fake `gh` and `claude` shims). Set `CTF_PR_ORG` for a different org (default `FS-Code`).
 **Day-to-day guide: [docs/playbooks/pr-cockpit.md](docs/playbooks/pr-cockpit.md).**
 
+### Task Board (task-serve)
+
+A local, read-only web dashboard over `tasks.db` — projects grouped by organization, a Table/Kanban
+board with org/project/sprint/status/priority/search/due-date filters, a sprint detail page, a
+running-agents strip, and a task detail slide-over (notes, acceptance criteria, dependencies, status
+and agent history). There's no write endpoint: anywhere the UI would mutate state, it shows the exact
+`taskctl`/`agent-dispatch` command as copyable text instead — the CLI is still the only writer.
+
+```bash
+scripts/taskctl serve --bg        # tmux ctf-agents:task-serve, http://127.0.0.1:7788 (CTF_TASK_UI_PORT)
+scripts/taskctl serve stop
+```
+
+Frontend is `task-ui/` — a sibling app to `ui/` (separate React major version and component system, so
+neither UI can break the other). Built `task-ui/dist` is committed, same as `ui/dist`; rebuild with
+`cd task-ui && npm run build` after UI changes. Tests: `scripts/test-task-serve` (offline, same pattern
+as `test-prctl`).
+
 ### doctor
 
 ```bash
@@ -386,6 +404,7 @@ The `skills/appstoreconnect/` skill provides a workflow for managing App Store m
 | `CTF_PR_NOTIFY` | `1` | macOS notification when a review is staged |
 | `CTF_PR_REVIEWS_DIR` | `.reviews/` | Staged reports + logs |
 | `CTF_PR_IGNORE_REPOS` / `CTF_PR_IGNORE_AUTHORS` | (config table) | Env override of `prctl config` ignore lists |
+| `CTF_TASK_UI_PORT` | `7788` | Port for the Task Board (`taskctl serve` / `task-serve`) |
 
 ## Requirements
 

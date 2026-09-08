@@ -203,6 +203,35 @@ Worker: `pr-sync` every 5 min (GraphQL, one query per repo that has open PRs), r
 
 Session hooks (`hooks/pr-session-*.sh`, installed by `scripts/install-pr-hooks.sh`) register every Claude session; `prctl claim` links the current one (`$CLAUDE_CODE_SESSION_ID`) to a PR. Schema: `scripts/migrate-v5-prs.sh` (existing DBs) / `init-db.sh` (new). Tests: `scripts/test-prctl` (offline, fake `gh`/`claude`). **Usage playbook: `docs/playbooks/pr-cockpit.md`** (daily loop, where reports live, sessions, troubleshooting). Design: `docs/plans/2026-08-17-pr-cockpit-design.md`.
 
+## Task Board (task-serve)
+
+Local, read-only web dashboard over `tasks.db` — projects grouped by organization in a sidebar (each
+showing its active sprint + done/total chip), a Table/Kanban board with org/project/sprint/status/
+priority/search/due-date filters, a sprint detail page (`/sprints/:id`) with a progress bar, a
+system-wide running-agents strip + header stat counts (paused/in-review/running/stuck), and a task
+detail slide-over with notes, acceptance criteria, dependencies/subtasks/parent, and status/agent
+history. There is no write endpoint — every screen that would mutate state shows the exact
+`taskctl`/`agent-dispatch` command as copyable text instead of a button, so the CLI stays the only writer.
+
+```bash
+scripts/taskctl serve [--port N] [--bg] | serve stop   # tmux ctf-agents:task-serve, default port 7788 (CTF_TASK_UI_PORT)
+scripts/task-serve [--port N] [--host H]                # what `taskctl serve` execs/backgrounds; binds 127.0.0.1 only
+```
+
+API (`GET`-only, bound params, `scripts/task-serve`): `/api/projects`, `/api/sprints[?project_id]`,
+`/api/sprints/:id` (sprint row + its `tasks`), `/api/tasks?project_id&org_id&sprint_id&status&priority&q&due_date_from&due_date_to&agent_state=running|stuck&include_done&limit&cursor`
+— paginated (`{tasks, next_cursor, total}`; excludes `status=done` unless `include_done=1`), `/api/tasks/:id`
+(adds `notes`, `acceptance_criteria`, resolved `project`/`sprint`/`parent`/`subtasks`/`depends_on_tasks`,
+`agent_history`, `status_history`), `/api/agents?state=running|stuck`. `stuck` mirrors `agent-watcher`'s
+exact predicate (`status='running'` AND heartbeat older than `CTF_STUCK_TIMEOUT`) rather than a second
+definition of the same thing.
+
+Frontend: `task-ui/` — a sibling app, not an extension of `ui/` (which stays React 18 for PR Cockpit).
+React 19 + TanStack Query + React Router v7, styled with shadcn/Base UI primitives copied from
+`~/RiderProjects/janavar-ai/web`. Built `task-ui/dist` is committed so `taskctl serve` needs no Node;
+rebuild with `cd task-ui && npm run build` after UI changes. Tests: `scripts/test-task-serve` (offline —
+inline schema + seed rows in a throwaway DB, modeled on `test-prctl`). Design: `docs/plans/2026-09-07-task-dashboard-design.md`.
+
 ## Task Schema
 ```sql
 tasks: id, title, type, status, priority, project_id, parent_task_id,
@@ -226,6 +255,7 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 - **Hooks**: `hooks/` — session-start (focus injection), pr-session-start/seen/end (PR cockpit session registry)
 - **Skills**: `skills/` — `/refactor` mega-skill, utilities (`/opib`, `/list-prs`, `/summ`, `/efnpm` — explain a topic for a non-technical PM), plus team-lead, docs-lookup, isolate-workspace, ctf-clean (`/ctf-clean` workspace janitor), appstoreconnect, the ASO suite, and the review pair: `/reviewer-ultra` (multi-agent PR review: regressions/bugs/smells + validators) and `/readable-ultra` (readability-only review distilled from Clean Code / The Art of Readable Code; composes with reviewer-ultra as a 4th finder). The interactive dev workflow (brainstorm → plan → execute → review) uses the external **superpowers** skills — see [Superpowers workflow skills](#superpowers-workflow-skills). The global `/tirf` skill (Type In a Readable Format — reshapes bloated AI output into a scannable, lossless view) also lives in `~/.claude/skills/`, not in this repo's `skills/`, and composes with `writing-clearly-and-concisely`.
 - **UI**: `ui/` — React + TS + Tailwind v4 + shadcn-style components (Vite). Built `ui/dist` is committed so `prctl serve` needs no Node; rebuild with `cd ui && npm run build` after UI changes.
+- **Task UI**: `task-ui/` — sibling React 19 + TanStack Query + React Router v7 dashboard for `tasks.db` (Board, `/sprints/:id`, task detail sheet), kept separate from `ui/` so the two never share a `dist` or a component system. Served by `scripts/task-serve` + `taskctl serve`; built `task-ui/dist` is committed the same way `ui/dist` is.
 - **Templates**: `templates/` — Discord embed templates (pr_review, jira_status, seo_monitor)
 - **Workflows**: `scripts/workflows/` — blog-image-gen, gsc-audit
 
@@ -252,6 +282,8 @@ sprints: id, name, project_id, goal, status, start_date, end_date,
 | `install-pr-hooks.sh` | Appends the three PR session hooks to `~/.claude/settings.json` (idempotent, backup) |
 | `test-prctl` | Offline integration test for the whole PR cockpit (fake `gh` + `claude` shims) |
 | `pr-serve` | Local web UI server (Python stdlib, 127.0.0.1 only): JSON API + serves the React app from `ui/dist`; reads `tasks.db`, mutates only via `prctl` |
+| `task-serve` | Local web UI server (Python stdlib, 127.0.0.1 only) for the Task Board: read-only JSON API over `tasks.db` + serves `task-ui/dist`; no mutating endpoints |
+| `test-task-serve` | Offline integration test for `task-serve` (throwaway DB, inline schema + seed rows, asserts every endpoint's shape) |
 
 ## Conventions
 

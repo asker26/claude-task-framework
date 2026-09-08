@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# Offline smoke test for the task dashboard backend (task-serve, taskctl serve, doctor's check).
+# Runs offline: throwaway DB via TASK_DB_PATH, no tmux/gh/claude involved — pure sqlite3 + curl + jq.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+export TASK_DB_PATH="$TMP/test.db"
+
+fail=0
+ok()  { printf "  [ok] %s\n" "$1"; }
+bad() { printf "  [FAIL] %s\n" "$1"; fail=1; }
+chk() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+db()  { sqlite3 "$TASK_DB_PATH" "$1"; }
+
+reset_db() {
+  rm -f "$TASK_DB_PATH"
+  sqlite3 "$TASK_DB_PATH" <<'SQL'
+CREATE TABLE organizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    jira_instance TEXT,
+    jira_project_key TEXT,
+    discord_webhook_url TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    github_repo TEXT,
+    local_path TEXT,
+    description TEXT,
+    context TEXT,
+    organization_id INTEGER REFERENCES organizations(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE sprints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    project_id INTEGER REFERENCES projects(id),
+    goal TEXT,
+    status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned', 'active', 'completed', 'cancelled')),
+    start_date TEXT,
+    end_date TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'feature' CHECK(type IN ('feature', 'bug', 'research', 'video', 'release', 'other')),
+    status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'in-progress', 'in-review', 'approved', 'testing', 'done', 'paused')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high', 'medium', 'low')),
+    project_id INTEGER,
+    parent_task_id INTEGER,
+    notes TEXT,
+    due_date TEXT,
+    depends_on TEXT,
+    acceptance_criteria TEXT,
+    assigned_agent_id INTEGER REFERENCES agent_profiles(id),
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sprint_id INTEGER REFERENCES sprints(id)
+);
+CREATE TABLE agent_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    tool_grants TEXT,
+    auto_assign_types TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    worker_name TEXT NOT NULL DEFAULT 'agent',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
+    cli_session_id TEXT,
+    tmux_pane TEXT,
+    pid INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    result TEXT,
+    heartbeat_at TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    profile_id INTEGER REFERENCES agent_profiles(id)
+);
+CREATE TABLE task_status_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES tasks(id),
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO organizations (id, name) VALUES (1, 'TestOrg');
+
+INSERT INTO projects (id, name, github_repo, local_path, organization_id) VALUES
+  (1, 'alpha', 'org/alpha', '/tmp/alpha', 1),
+  (2, 'beta', NULL, NULL, NULL);
+
+INSERT INTO sprints (id, name, project_id, goal, status, start_date, end_date) VALUES
+  (1, 'Sprint A', 1, 'ship it', 'active', '2026-01-01', '2026-02-01'),
+  (2, 'Sprint B', 2, NULL, 'planned', NULL, NULL);
+
+INSERT INTO agent_profiles (id, name, role, system_prompt, auto_assign_types) VALUES
+  (1, 'Alex', 'coder', 'You are Alex.', '["feature","bug"]'),
+  (2, 'Maya', 'researcher', 'You are Maya.', '["research"]');
+
+INSERT INTO tasks (id, title, type, status, priority, project_id, sprint_id, parent_task_id, notes, depends_on, assigned_agent_id, due_date) VALUES
+  (1,  'Task Todo',        'feature',  'todo',        'high',   1, 1,    NULL, NULL,                  NULL,  1,    '2026-01-10'),
+  (2,  'Task Running',     'feature',  'in-progress', 'medium', 1, 1,    NULL, NULL,                  NULL,  1,    '2026-01-15'),
+  (3,  'Task Stuck',       'bug',      'in-progress', 'high',   1, 1,    NULL, NULL,                  NULL,  1,    '2026-01-20'),
+  (4,  'Task Done',        'feature',  'done',        'low',    1, 1,    NULL, NULL,                  NULL,  NULL, NULL),
+  (5,  'Task Paused',      'bug',      'paused',      'medium', 1, 1,    NULL, NULL,                  NULL,  NULL, '2026-02-01'),
+  (6,  'Task InReview',    'feature',  'in-review',   'medium', 1, 1,    NULL, NULL,                  NULL,  NULL, NULL),
+  (7,  'Task NoProject',   'other',    'todo',        'low',    NULL, NULL, NULL, NULL,               NULL,  NULL, NULL),
+  (8,  'Parent Task',      'feature',  'todo',        'medium', 2, NULL, NULL, NULL,                  NULL,  NULL, NULL),
+  (9,  'Child Task',       'feature',  'todo',        'medium', 2, NULL, 8,    NULL,                  '[1]', NULL, NULL),
+  (10, 'Search Me Unique', 'research', 'todo',        'low',    1, NULL, NULL, 'special-marker-xyz',  NULL,  2,    NULL);
+
+INSERT INTO agents (id, task_id, worker_name, status, retry_count, result, heartbeat_at, started_at, completed_at, tmux_pane, profile_id) VALUES
+  (1, 2, 'Sam',  'failed',    0, 'failed first try', datetime('now','-40 minutes'), datetime('now','-45 minutes'), datetime('now','-40 minutes'), NULL,       1),
+  (2, 2, 'Alex', 'running',   1, NULL,               datetime('now','-1 minutes'),  datetime('now','-3 minutes'),  NULL,                           'agent-2', 1),
+  (3, 3, 'Alex', 'running',   0, NULL,               datetime('now','-7 minutes'),  datetime('now','-30 minutes'), NULL,                           'agent-3', 1),
+  (4, 4, 'Alex', 'completed', 0, 'shipped',          datetime('now','-100 minutes'),datetime('now','-110 minutes'),datetime('now','-100 minutes'), NULL,       1);
+
+INSERT INTO task_status_changes (task_id, from_status, to_status, changed_at) VALUES
+  (2, 'todo', 'in-progress', datetime('now','-3 minutes')),
+  (3, 'todo', 'in-progress', datetime('now','-30 minutes')),
+  (5, 'in-progress', 'paused', datetime('now','-200 minutes'));
+SQL
+}
+
+start_server() {  # honors whatever CTF_STUCK_TIMEOUT is exported by the caller
+  "$ROOT/scripts/task-serve" --port 0 > "$TMP/serve.log" 2>&1 &
+  SERVE_PID=$!
+  for i in $(seq 1 50); do grep -q "listening on" "$TMP/serve.log" 2>/dev/null && break; sleep 0.2; done
+  PORT="$(grep -o 'http://127.0.0.1:[0-9]*' "$TMP/serve.log" | head -1 | sed 's/.*://')"
+  BASE="http://127.0.0.1:$PORT"
+}
+stop_server() { kill "$SERVE_PID" 2>/dev/null; wait "$SERVE_PID" 2>/dev/null; }
+
+echo "== setup =="
+reset_db
+chk "10 tasks seeded"    "[[ \$(db 'SELECT COUNT(*) FROM tasks;') == 10 ]]"
+chk "4 agent rows seeded" "[[ \$(db 'SELECT COUNT(*) FROM agents;') == 4 ]]"
+
+echo "== task-serve executable =="
+chk "task-serve is executable" "test -x '$ROOT/scripts/task-serve'"
+
+echo "== server (CTF_STUCK_TIMEOUT=5) =="
+export CTF_STUCK_TIMEOUT=5
+start_server
+chk "server starts and prints its port" "[[ -n \"\$PORT\" ]]"
+
+echo "== /api/projects =="
+chk "returns 2 projects"        "[[ \$(curl -s \"\$BASE/api/projects\" | jq 'length') == 2 ]]"
+chk "alpha has org_name"        "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"alpha\") | .org_name == \"TestOrg\"' >/dev/null"
+chk "beta has null org_name"    "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"beta\") | .org_name == null' >/dev/null"
+chk "alpha task_count/open 7/6" "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"alpha\") | .task_count == 7 and .open_task_count == 6' >/dev/null"
+chk "beta task_count/open 2/2"  "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"beta\") | .task_count == 2 and .open_task_count == 2' >/dev/null"
+chk "alpha active_sprint_id 1"  "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"alpha\") | .active_sprint_id == 1 and .active_sprint_name == \"Sprint A\"' >/dev/null"
+chk "beta active_sprint_id null" "curl -s \"\$BASE/api/projects\" | jq -e '.[] | select(.name==\"beta\") | .active_sprint_id == null' >/dev/null"
+
+echo "== /api/sprints =="
+chk "returns 2 sprints"           "[[ \$(curl -s \"\$BASE/api/sprints\" | jq 'length') == 2 ]]"
+chk "?project_id=1 returns 1"     "[[ \$(curl -s \"\$BASE/api/sprints?project_id=1\" | jq 'length') == 1 ]]"
+chk "Sprint A done/total 1/6"     "curl -s \"\$BASE/api/sprints?project_id=1\" | jq -e '.[0].done == 1 and .[0].total == 6' >/dev/null"
+
+echo "== /api/sprints/:id =="
+chk "sprint 1: tasks len 6, done/total 1/6" "curl -s \"\$BASE/api/sprints/1\" | jq -e '(.tasks | length) == 6 and .done == 1 and .total == 6' >/dev/null"
+chk "sprint detail includes the done task" "curl -s \"\$BASE/api/sprints/1\" | jq -e '.tasks | map(.id) | index(4) != null' >/dev/null"
+chk "unknown sprint -> 404"                "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$BASE/api/sprints/999\") == 404 ]]"
+
+echo "== /api/tasks (paginated envelope shape) =="
+chk "response is an object with tasks/next_cursor/total" "curl -s \"\$BASE/api/tasks\" | jq -e 'has(\"tasks\") and has(\"next_cursor\") and has(\"total\")' >/dev/null"
+chk "excludes done by default (9 of 10)"    "[[ \$(curl -s \"\$BASE/api/tasks\" | jq '.tasks | length') == 9 ]]"
+chk "total matches 9 too (fits in one page)" "[[ \$(curl -s \"\$BASE/api/tasks\" | jq '.total') == 9 ]]"
+chk "next_cursor null when everything fit"  "[[ \$(curl -s \"\$BASE/api/tasks\" | jq '.next_cursor') == null ]]"
+chk "no done rows in default list"          "curl -s \"\$BASE/api/tasks\" | jq -e '.tasks | map(.status) | index(\"done\") == null' >/dev/null"
+chk "include_done=1 returns all 10"         "[[ \$(curl -s \"\$BASE/api/tasks?include_done=1\" | jq '.tasks | length') == 10 ]] && [[ \$(curl -s \"\$BASE/api/tasks?include_done=1\" | jq '.total') == 10 ]]"
+chk "status=done returns just task 4"       "[[ \$(curl -s \"\$BASE/api/tasks?status=done\" | jq '.tasks | length') == 1 ]] && curl -s \"\$BASE/api/tasks?status=done\" | jq -e '.tasks[0].id == 4' >/dev/null"
+chk "tasks ordered by id ascending"         "curl -s \"\$BASE/api/tasks?include_done=1\" | jq -e '[.tasks[].id] == ([.tasks[].id] | sort)' >/dev/null"
+
+echo "== /api/tasks (pagination: limit + cursor) =="
+chk "limit=3 returns 3 rows, next_cursor=3, total still 9" "curl -s \"\$BASE/api/tasks?limit=3\" | jq -e '(.tasks | length) == 3 and ([.tasks[].id] == [1,2,3]) and .next_cursor == 3 and .total == 9' >/dev/null"
+chk "cursor=3&limit=3 returns the next 3, next_cursor=7"   "curl -s \"\$BASE/api/tasks?limit=3&cursor=3\" | jq -e '([.tasks[].id] == [5,6,7]) and .next_cursor == 7 and .total == 9' >/dev/null"
+chk "cursor=7&limit=3 returns the last 3, next_cursor null" "curl -s \"\$BASE/api/tasks?limit=3&cursor=7\" | jq -e '([.tasks[].id] == [8,9,10]) and .next_cursor == null and .total == 9' >/dev/null"
+cursor="" walked=""
+for _ in 1 2 3 4 5; do
+  url="$BASE/api/tasks?limit=3"; [[ -n "$cursor" ]] && url="$url&cursor=$cursor"
+  page="$(curl -s "$url")"
+  walked="$walked $(echo "$page" | jq -r '.tasks[].id')"
+  cursor="$(echo "$page" | jq -r '.next_cursor // empty')"
+  [[ -z "$cursor" ]] && break
+done
+walked_sorted="$(echo "$walked" | xargs -n1 | sort -n | xargs)"
+chk "cursor walk (limit=3) visits all 9 open ids exactly once, in order" "[[ '$walked_sorted' == '1 2 3 5 6 7 8 9 10' ]]"
+chk "limit=1 gives a cheap total-only read (total still 9)" "curl -s \"\$BASE/api/tasks?limit=1\" | jq -e '(.tasks | length) == 1 and .total == 9' >/dev/null"
+chk "total ignores limit/cursor but respects other filters (project_id=2 total 2)" "curl -s \"\$BASE/api/tasks?project_id=2&limit=1\" | jq -e '.total == 2 and (.tasks | length) == 1' >/dev/null"
+
+echo "== /api/tasks (filters) =="
+chk "project_id=2 returns 2"        "[[ \$(curl -s \"\$BASE/api/tasks?project_id=2\" | jq '.tasks | length') == 2 ]]"
+chk "priority=high returns 2"       "[[ \$(curl -s \"\$BASE/api/tasks?priority=high\" | jq '.tasks | length') == 2 ]]"
+chk "q=special-marker finds task 10 via notes" "[[ \$(curl -s \"\$BASE/api/tasks?q=special-marker\" | jq '.tasks | length') == 1 ]] && curl -s \"\$BASE/api/tasks?q=special-marker\" | jq -e '.tasks[0].id == 10' >/dev/null"
+chk "list omits notes/acceptance_criteria"  "curl -s \"\$BASE/api/tasks?project_id=1\" | jq -e '(.tasks[0] | has(\"notes\")) or (.tasks[0] | has(\"acceptance_criteria\")) | not' >/dev/null"
+chk "depends_on parsed as an int array"     "curl -s \"\$BASE/api/tasks?project_id=2\" | jq -e '.tasks[] | select(.id==9) | .depends_on == [1]' >/dev/null"
+
+echo "== /api/tasks (org_id, due_date_from/due_date_to) =="
+chk "org_id=1 returns only alpha's open tasks (6)"    "[[ \$(curl -s \"\$BASE/api/tasks?org_id=1\" | jq '.tasks | length') == 6 ]] && [[ \$(curl -s \"\$BASE/api/tasks?org_id=1\" | jq '.total') == 6 ]]"
+chk "org_id=1 excludes beta's org-less tasks"         "curl -s \"\$BASE/api/tasks?org_id=1\" | jq -e '[.tasks[].id] | index(8) == null and index(9) == null' >/dev/null"
+chk "org_id=999 (no such org) returns 0"              "[[ \$(curl -s \"\$BASE/api/tasks?org_id=999\" | jq '.tasks | length') == 0 ]] && [[ \$(curl -s \"\$BASE/api/tasks?org_id=999\" | jq '.total') == 0 ]]"
+chk "due_date_from=2026-01-12 returns tasks 2,3,5"    "curl -s \"\$BASE/api/tasks?due_date_from=2026-01-12\" | jq -e '([.tasks[].id] | sort) == [2,3,5]' >/dev/null"
+chk "due_date_to=2026-01-16 returns tasks 1,2"        "curl -s \"\$BASE/api/tasks?due_date_to=2026-01-16\" | jq -e '([.tasks[].id] | sort) == [1,2]' >/dev/null"
+chk "due_date range 01-12..01-18 -> only task 2"      "curl -s \"\$BASE/api/tasks?due_date_from=2026-01-12&due_date_to=2026-01-18\" | jq -e '([.tasks[].id]) == [2]' >/dev/null"
+chk "tasks with no due_date excluded from range filter" "curl -s \"\$BASE/api/tasks?due_date_from=2026-01-01\" | jq -e '[.tasks[].id] | index(6) == null and index(7) == null' >/dev/null"
+chk "due_date filters are independent of org_id/project_id" "curl -s \"\$BASE/api/tasks?project_id=1&due_date_to=2026-01-16\" | jq -e '([.tasks[].id] | sort) == [1,2]' >/dev/null"
+
+echo "== running_agent / stuck (CTF_STUCK_TIMEOUT=5) =="
+chk "task 2 has running_agent, not stuck"   "curl -s \"\$BASE/api/tasks?project_id=1\" | jq -e '.tasks[] | select(.id==2) | .running_agent.worker_name == \"Alex\" and .running_agent.stuck == false' >/dev/null"
+chk "task 3 has running_agent, stuck=true (7m > 5m)" "curl -s \"\$BASE/api/tasks?project_id=1\" | jq -e '.tasks[] | select(.id==3) | .running_agent.stuck == true' >/dev/null"
+chk "task 4 (done, completed agent) running_agent null" "curl -s \"\$BASE/api/tasks?include_done=1&project_id=1\" | jq -e '.tasks[] | select(.id==4) | .running_agent == null' >/dev/null"
+chk "task 1 (never had an agent) running_agent null"    "curl -s \"\$BASE/api/tasks?project_id=1\" | jq -e '.tasks[] | select(.id==1) | .running_agent == null' >/dev/null"
+chk "agent_state=running returns tasks 2+3" "[[ \$(curl -s \"\$BASE/api/tasks?agent_state=running\" | jq '.tasks | length') == 2 ]]"
+chk "agent_state=stuck returns only task 3" "[[ \$(curl -s \"\$BASE/api/tasks?agent_state=stuck\" | jq '.tasks | length') == 1 ]] && curl -s \"\$BASE/api/tasks?agent_state=stuck\" | jq -e '.tasks[0].id == 3' >/dev/null"
+
+echo "== /api/tasks/:id =="
+chk "task 9 depends_on_tasks resolves task 1"  "curl -s \"\$BASE/api/tasks/9\" | jq -e '.depends_on_tasks[0].id == 1 and .depends_on_tasks[0].title == \"Task Todo\"' >/dev/null"
+chk "task 8 subtasks include task 9"           "curl -s \"\$BASE/api/tasks/8\" | jq -e '.subtasks | map(.id) | index(9) != null' >/dev/null"
+chk "task 9 parent is task 8"                  "curl -s \"\$BASE/api/tasks/9\" | jq -e '.parent.id == 8 and .parent.title == \"Parent Task\"' >/dev/null"
+chk "task 1 parent is null"                    "curl -s \"\$BASE/api/tasks/1\" | jq -e '.parent == null' >/dev/null"
+chk "task 2 status_history present"            "curl -s \"\$BASE/api/tasks/2\" | jq -e '(.status_history | length) >= 1 and .status_history[0].to_status == \"in-progress\"' >/dev/null"
+chk "task 2 agent_history desc (running,failed)" "curl -s \"\$BASE/api/tasks/2\" | jq -e '(.agent_history | length) == 2 and .agent_history[0].status == \"running\" and .agent_history[1].status == \"failed\"' >/dev/null"
+chk "task 2 project resolved"                  "curl -s \"\$BASE/api/tasks/2\" | jq -e '.project.id == 1 and .project.name == \"alpha\"' >/dev/null"
+chk "task 2 sprint resolved"                   "curl -s \"\$BASE/api/tasks/2\" | jq -e '.sprint.id == 1 and .sprint.name == \"Sprint A\"' >/dev/null"
+chk "task 2 assigned_agent resolved"           "curl -s \"\$BASE/api/tasks/2\" | jq -e '.assigned_agent.name == \"Alex\" and .assigned_agent.role == \"coder\"' >/dev/null"
+chk "task 7 has null project and sprint"       "curl -s \"\$BASE/api/tasks/7\" | jq -e '.project == null and .sprint == null' >/dev/null"
+chk "task 10 detail includes notes"            "curl -s \"\$BASE/api/tasks/10\" | jq -e '.notes == \"special-marker-xyz\"' >/dev/null"
+chk "unknown task -> 404"                      "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$BASE/api/tasks/999\") == 404 ]]"
+
+echo "== /api/agents =="
+chk "default lists the 2 active agents"        "[[ \$(curl -s \"\$BASE/api/agents\" | jq 'length') == 2 ]]"
+chk "state=running returns 2"                  "[[ \$(curl -s \"\$BASE/api/agents?state=running\" | jq 'length') == 2 ]]"
+chk "state=stuck returns 1 (task 3's agent)"   "[[ \$(curl -s \"\$BASE/api/agents?state=stuck\" | jq 'length') == 1 ]] && curl -s \"\$BASE/api/agents?state=stuck\" | jq -e '.[0].task_id == 3' >/dev/null"
+chk "agent row carries task_title/project_name" "curl -s \"\$BASE/api/agents\" | jq -e '.[] | select(.task_id==2) | .task_title == \"Task Running\" and .project_name == \"alpha\"' >/dev/null"
+
+chk "unknown /api route -> 404 json" "curl -s \"\$BASE/api/nope\" | jq -e '.error == \"not found\"' >/dev/null"
+
+stop_server
+
+echo "== static file branch (isolated copy — task-ui/ may or may not be built in this working tree, so this proves the missing-dist path deterministically without touching the real task-ui/) =="
+ISO="$TMP/isolated"
+mkdir -p "$ISO/scripts"
+cp "$ROOT/scripts/task-serve" "$ISO/scripts/task-serve"
+chmod +x "$ISO/scripts/task-serve"
+"$ISO/scripts/task-serve" --port 0 > "$TMP/iso-serve.log" 2>&1 &
+ISO_PID=$!
+for i in $(seq 1 50); do grep -q "listening on" "$TMP/iso-serve.log" 2>/dev/null && break; sleep 0.2; done
+ISO_PORT="$(grep -o 'http://127.0.0.1:[0-9]*' "$TMP/iso-serve.log" | head -1 | sed 's/.*://')"
+ISO_BASE="http://127.0.0.1:$ISO_PORT"
+chk "isolated server starts"                      "[[ -n \"\$ISO_PORT\" ]]"
+chk "GET / -> 404, no crash (dist not built)"     "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$ISO_BASE/\") == 404 ]]"
+chk "GET /sprints/1 (SPA route) -> 404, no crash" "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$ISO_BASE/sprints/1\") == 404 ]]"
+chk "GET /assets/x.js -> 404"                     "[[ \$(curl -s -o /dev/null -w '%{http_code}' \"\$ISO_BASE/assets/x.js\") == 404 ]]"
+kill "$ISO_PID" 2>/dev/null; wait "$ISO_PID" 2>/dev/null
+
+echo "== server restarted (CTF_STUCK_TIMEOUT=10) =="
+export CTF_STUCK_TIMEOUT=10
+start_server
+chk "same agent NOT stuck under a 10m timeout (proves env var is honored)" "curl -s \"\$BASE/api/tasks?project_id=1\" | jq -e '.tasks[] | select(.id==3) | .running_agent.stuck == false' >/dev/null"
+chk "agent_state=stuck now returns 0"          "[[ \$(curl -s \"\$BASE/api/tasks?agent_state=stuck\" | jq '.tasks | length') == 0 ]]"
+chk "/api/agents?state=stuck now returns 0"    "[[ \$(curl -s \"\$BASE/api/agents?state=stuck\" | jq 'length') == 0 ]]"
+stop_server
+
+echo ""
+if [[ $fail -eq 0 ]]; then echo "ALL OK"; else echo "FAILURES"; exit 1; fi
