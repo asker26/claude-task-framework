@@ -87,6 +87,7 @@ When auto-picking tasks, `agent-dispatch` scores them by:
 - Active-sprint bonus: +25 if the task is in a sprint whose status is `active`
 - Tiebreaker: oldest `created_at` first
 - Tasks with unmet `depends_on` are skipped
+- Tasks titled `[YOU] …` or `[Human] …` are skipped — they are human-action items no agent can complete, and without this they get dispatched, fail twice, and auto-pause as if they were broken. Explicit `agent-dispatch <id>` still dispatches one if you really want it attempted.
 - Set `CTF_SPRINT=<id|name>` to restrict auto-pick to a single sprint's tasks
 
 ### Concurrency and environment

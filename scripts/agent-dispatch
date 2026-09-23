@@ -50,6 +50,8 @@ if [[ -z "$task_id" ]]; then
     WHERE t.status = 'todo'
       AND t.project_id IS NOT NULL
       ${sprint_filter}
+      AND t.title NOT LIKE '[YOU]%'
+      AND t.title NOT LIKE '[Human]%'
       AND NOT EXISTS (
         SELECT 1 FROM agents a WHERE a.task_id = t.id AND a.status = 'running'
       )
